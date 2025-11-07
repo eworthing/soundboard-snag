@@ -60,6 +60,21 @@ After searching, download using the board name:
 python3 soundboard-snag.py --board starwars
 ```
 
+### Custom Download Location
+
+Specify a custom root directory for downloads:
+
+```bash
+# Download to a custom location
+python3 soundboard-snag.py --board starwars --download-root ~/Music/Soundboards
+
+# Using short flag
+python3 soundboard-snag.py --board starwars -d /path/to/downloads
+
+# Works with search-and-download too
+python3 soundboard-snag.py --search-and-download "hockey" -d ~/Downloads/Sounds
+```
+
 ### Search and Download All Results
 
 Search and automatically download all matching boards:
@@ -92,6 +107,7 @@ python3 soundboard-snag.py
 | `--search-and-download` | Search and download all results automatically |
 | `-b, --board` | Download by board name |
 | `-u, --url` | Download by full URL |
+| `-d, --download-root` | Root directory for downloads (default: current directory) |
 | `--max` | Maximum boards to check in search (default: 20) |
 | `--min-views` | Minimum views required (default: 10, use 0 for no filter) |
 | `--min-sounds` | Minimum sounds required (default: 3, use 0 for no filter) |
@@ -106,8 +122,14 @@ python3 soundboard-snag.py --search "star wars" --min-views 1000
 # Download a specific board
 python3 soundboard-snag.py --board R2D2_R2_D2_sounds
 
+# Download to a custom location
+python3 soundboard-snag.py --board starwars -d ~/Music/Soundboards
+
 # Search and download hockey boards
 python3 soundboard-snag.py --search-and-download "hockey" --max 5
+
+# Search and download to custom location
+python3 soundboard-snag.py --search-and-download "nature" --max 3 -d ~/Sounds
 
 # Debug mode to see filtering details
 python3 soundboard-snag.py --search "test" --debug
@@ -148,9 +170,10 @@ Use `--min-views 0 --min-sounds 0` to disable filtering.
 
 ## Output
 
-Files are saved to a subfolder named after the board in your current directory:
+Files are saved to a subfolder named after the board. By default, subfolders are created in your current directory, but you can specify a custom location with `--download-root`:
 
 ```
+# Default location (current directory)
 ./
 ├── starwars/
 │   ├── R2-D2 Scream.mp3
@@ -159,6 +182,14 @@ Files are saved to a subfolder named after the board in your current directory:
 └── hockey/
     ├── Goal Horn.mp3
     └── Skate Sound.mp3
+
+# Custom location (e.g., --download-root ~/Music/Soundboards)
+~/Music/Soundboards/
+├── starwars/
+│   ├── R2-D2 Scream.mp3
+│   └── ...
+└── hockey/
+    └── ...
 ```
 
 ## Limitations
