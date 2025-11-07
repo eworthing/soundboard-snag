@@ -16,8 +16,18 @@ Usage (Recommended - Search then Download by Name):
     # Step 2: Download by board name from search results
     python3 soundboard-snag.py --board starwars
 
+    # Download to a custom location
+    python3 soundboard-snag.py --board starwars --download-root ~/Music/Soundboards
+
 Alternative Usage (Direct URL):
     python3 soundboard-snag.py --url https://www.soundboard.com/sb/starwars
+
+    # Download URL to custom location
+    python3 soundboard-snag.py --url https://www.soundboard.com/sb/starwars -d ~/Downloads/Sounds
+
+Search and Download:
+    # Search and download all results to a custom location
+    python3 soundboard-snag.py --search-and-download "nature" --max 5 -d ~/Sounds
 
 Interactive Mode:
     python3 soundboard-snag.py
