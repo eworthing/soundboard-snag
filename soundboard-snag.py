@@ -85,12 +85,13 @@ class Colors:
 class SoundboardSnag:
     """Snags and manages soundboard audio files."""
 
-    def __init__(self, soundboard_url):
+    def __init__(self, soundboard_url, download_root=None):
         """Initialize snag tool with a soundboard URL.
 
         Args:
             soundboard_url: A string URL pointing to a soundboard.com page.
                 Expected format: https://www.soundboard.com/sb/boardname
+            download_root: Optional root directory for downloads. If None, uses CWD.
 
         Raises:
             ValueError: If the URL format is invalid or board name cannot
@@ -99,6 +100,7 @@ class SoundboardSnag:
         self.url = urlparse(soundboard_url)
         self.board_name = self._extract_board_name()
         self.base_url = BASE_URL
+        self.download_root = download_root if download_root else os.getcwd()
 
     def _extract_board_name(self):
         """Extract the board name from the URL path.
@@ -327,7 +329,11 @@ class SoundboardSnag:
             print(f"   Boards with download buttons will work (e.g., starwars, R2D2_R2_D2_sounds)")
             raise RuntimeError("Board has downloads disabled - cannot proceed")
 
-        print(f"   {Colors.GRAY}({download_count} download buttons detected){Colors.RESET}\n")
+        print(f"   {Colors.GRAY}({download_count} download buttons detected){Colors.RESET}")
+
+        # Show download location
+        output_dir = os.path.join(self.download_root, self.board_name)
+        print(f"   {Colors.GRAY}Download location: {os.path.abspath(output_dir)}{Colors.RESET}\n")
 
         # Download each sound
         snagged_count = 0
@@ -336,15 +342,17 @@ class SoundboardSnag:
         consecutive_failures = 0
         max_consecutive_failures = 2  # Exit if this many failures in a row
 
+        output_dir = os.path.join(self.download_root, self.board_name)
+
         for i, (sound_id, page_title) in enumerate(sound_items, 1):
             print(f"{Colors.GRAY}[{i}/{len(sound_items)}]{Colors.RESET} Snagging audio ID {Colors.CYAN}{sound_id}{Colors.RESET}...")
 
             # Create output directory only when needed (before first download attempt)
-            if not os.path.exists(self.board_name):
-                os.makedirs(self.board_name)
-                print(f"  {Colors.BLUE}Created directory: {self.board_name}{Colors.RESET}")
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+                print(f"  {Colors.BLUE}Created directory: {os.path.abspath(output_dir)}{Colors.RESET}")
 
-            result, data = self._snag_sound(sound_id, page_title, self.board_name)
+            result, data = self._snag_sound(sound_id, page_title, output_dir)
 
             if result is True:
                 final_filename, size_kb = data
@@ -370,10 +378,10 @@ class SoundboardSnag:
 
                     # Clean up empty directory if no files were successfully downloaded or existed
                     if snagged_count == 0 and existing_count == 0:
-                        if os.path.exists(self.board_name) and os.path.isdir(self.board_name):
+                        if os.path.exists(output_dir) and os.path.isdir(output_dir):
                             try:
-                                os.rmdir(self.board_name)
-                                print(f"   {Colors.GRAY}Removed empty directory: {self.board_name}{Colors.RESET}")
+                                os.rmdir(output_dir)
+                                print(f"   {Colors.GRAY}Removed empty directory: {os.path.abspath(output_dir)}{Colors.RESET}")
                             except OSError:
                                 pass  # Directory not empty or other error, leave it
 
@@ -384,7 +392,7 @@ class SoundboardSnag:
                 time.sleep(REQUEST_DELAY)
 
         # Summary
-        full_path = os.path.abspath(self.board_name)
+        full_path = os.path.abspath(output_dir)
         print(f"\n{Colors.GREEN}{Colors.BOLD}✓ Snagging complete!{Colors.RESET} {Colors.CYAN}{snagged_count}{Colors.RESET} files saved to:")
         print(f"  {Colors.BOLD}{full_path}{Colors.RESET}")
         if existing_count > 0:
@@ -686,9 +694,11 @@ def main():
   # Alternative: Download by URL
   %(prog)s --url https://www.soundboard.com/sb/starwars
 
-Note: A subfolder will be created in the current working directory
-      with the name of the soundboard (e.g., 'starwars').
-      Current directory: {cwd}"""
+  # Specify custom download location
+  %(prog)s --board starwars --download-root ~/Music/Soundboards
+
+Note: A subfolder will be created with the name of the soundboard (e.g., 'starwars').
+      Default download location: {cwd}"""
 
     parser = argparse.ArgumentParser(
         description="Snag audio files from soundboard.com with clean filenames. "
@@ -739,9 +749,29 @@ Note: A subfolder will be created in the current working directory
         default=3,
         help="Minimum number of sounds required for search results (default: 3, use 0 for no filter)"
     )
+    parser.add_argument(
+        "-d", "--download-root",
+        type=str,
+        default=None,
+        help="Root directory for downloads (default: current working directory). "
+             "A subfolder with the board name will be created inside this directory."
+    )
 
 
     args = parser.parse_args()
+
+    # Expand and resolve the download root path if provided
+    download_root = None
+    if args.download_root:
+        download_root = os.path.abspath(os.path.expanduser(args.download_root))
+        # Create the root directory if it doesn't exist
+        if not os.path.exists(download_root):
+            try:
+                os.makedirs(download_root)
+                print(f"{Colors.BLUE}Created download root directory: {download_root}{Colors.RESET}\n")
+            except OSError as e:
+                print(f"{Colors.RED}Error creating download root directory: {e}{Colors.RESET}")
+                sys.exit(1)
 
     # Handle search-and-download mode
     if args.search_and_download:
@@ -768,7 +798,7 @@ Note: A subfolder will be created in the current working directory
 
                 try:
                     board_url = f"{BASE_URL}/sb/{board_name}"
-                    snag_tool = SoundboardSnag(board_url)
+                    snag_tool = SoundboardSnag(board_url, download_root=download_root)
                     success = snag_tool.snag()
 
                     if success:
@@ -838,7 +868,7 @@ Note: A subfolder will be created in the current working directory
 
     # Run snag tool
     try:
-        snag_tool = SoundboardSnag(soundboard_url)
+        snag_tool = SoundboardSnag(soundboard_url, download_root=download_root)
         success = snag_tool.snag()
 
         if not success:
