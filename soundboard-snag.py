@@ -934,7 +934,25 @@ def search_boards(
                 approx_source = None
                 track_headers_ok = None
                 track_headers_total = None
-                if include_dates or recent_threshold is not None or sort_by == "recent":
+                need_date_scan = include_dates or recent_threshold is not None or sort_by == "recent"
+                should_scan_dates = False
+                if need_date_scan:
+                    # Efficiency: date inference requires hitting per-track download URLs.
+                    # Skip this work for play-only boards (no download buttons), and also skip
+                    # for boards that already fail view/sound filters in non-debug mode.
+                    fails_basic_filters = (
+                        (min_views > 0 and views_int < min_views)
+                        or (min_sounds > 0 and sound_count < min_sounds)
+                    )
+
+                    if not has_downloads:
+                        vprint(f"Skipping date scan for play-only board: {board_name}")
+                    elif fails_basic_filters and not debug:
+                        vprint(f"Skipping date scan for filtered board: {board_name}")
+                    else:
+                        should_scan_dates = True
+
+                if should_scan_dates:
                     # Heuristic:
                     # - Use the max Last-Modified across track download URLs
                     track_date = None
@@ -1016,6 +1034,7 @@ def search_boards(
                             boards_with_track_date_total += 1
                         else:
                             boards_with_unknown_date_total += 1
+
 
                 # Apply filters first
                 meets_filters = True
