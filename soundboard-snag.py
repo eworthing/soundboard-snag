@@ -60,6 +60,7 @@ Limitations:
 import argparse
 import html
 import json
+import math
 import os
 import re
 import sys
@@ -709,6 +710,12 @@ def search_boards(
     track_headers_ok_total = 0
     track_headers_total_total = 0
 
+    # When using --recent-days, keep track of the newest boards that would have
+    # passed the basic filters (downloads/views/sounds) but missed the date window.
+    # This lets us provide a helpful suggestion when the date filter yields no results.
+    recent_near_misses_too_old = []  # List[Tuple[datetime, str]]
+    recent_near_misses_unknown = []  # List[str]
+
     progress_tty = bool(progress) and (not debug) and (not verbose) and sys.stdout.isatty()
     progress_lines = bool(progress) and (not debug) and (not verbose) and (not sys.stdout.isatty())
     progress_len = 0
@@ -912,6 +919,11 @@ def search_boards(
                 # Convert views to integer for sorting (handle commas and missing values)
                 views_int = _parse_views_count(views)
 
+                fails_basic_filters = (
+                    (min_views > 0 and views_int < min_views)
+                    or (min_sounds > 0 and sound_count < min_sounds)
+                )
+
                 if logger:
                     logger.event(
                         "board_parsed",
@@ -940,11 +952,6 @@ def search_boards(
                     # Efficiency: date inference requires hitting per-track download URLs.
                     # Skip this work for play-only boards (no download buttons), and also skip
                     # for boards that already fail view/sound filters in non-debug mode.
-                    fails_basic_filters = (
-                        (min_views > 0 and views_int < min_views)
-                        or (min_sounds > 0 and sound_count < min_sounds)
-                    )
-
                     if not has_downloads:
                         vprint(f"Skipping date scan for play-only board: {board_name}")
                     elif fails_basic_filters and not debug:
@@ -1049,7 +1056,10 @@ def search_boards(
                     if has_downloads:
                         skipped_buckets["sounds"] += 1
                     filter_reasons.append(f"sounds ({sound_count}) < min_sounds ({min_sounds})")
-                if recent_threshold is not None:
+                # Only apply the date-based filter if the board still passes the basic filters.
+                # This keeps skip reasons accurate (e.g., don't mark a board as "updated unknown"
+                # if we intentionally skipped date inference because it already failed views/sounds).
+                if recent_threshold is not None and meets_filters:
                     if not approx_updated:
                         meets_filters = False
                         if has_downloads:
@@ -1060,6 +1070,14 @@ def search_boards(
                         if has_downloads:
                             skipped_buckets["updated_too_old"] += 1
                         filter_reasons.append(f"updated ({_format_date(approx_updated)}) older than {recent_days} days")
+
+                # Collect suggestions for --recent-days near-misses.
+                # Only consider boards that are downloadable and would otherwise pass the basic filters.
+                if recent_threshold is not None and has_downloads and (not fails_basic_filters):
+                    if not approx_updated:
+                        recent_near_misses_unknown.append(board_name)
+                    elif approx_updated < recent_threshold:
+                        recent_near_misses_too_old.append((approx_updated, board_name))
 
                 if verbose:
                     vprint(
@@ -1194,6 +1212,39 @@ def search_boards(
                 breakdown_parts.append(f"updated too old: {skipped_buckets['updated_too_old']}")
             if breakdown_parts:
                 print(f"   Skipped breakdown (may overlap): {', '.join(breakdown_parts)}")
+
+            # If the date filter eliminated everything, suggest a more realistic --recent-days.
+            if recent_threshold is not None:
+                if recent_near_misses_too_old:
+                    now_utc = datetime.now(timezone.utc)
+                    recent_near_misses_too_old.sort(key=lambda x: x[0], reverse=True)
+                    top = recent_near_misses_too_old[:3]
+                    needed_days = []
+
+                    print(f"\n{Colors.GRAY}💡 Newest boards outside your {recent_days}-day window:{Colors.RESET}")
+                    for dt, board_name in top:
+                        age_days = int(math.ceil((now_utc - dt).total_seconds() / 86400.0))
+                        needed_days.append(age_days)
+                        print(
+                            f"   - {Colors.CYAN}{board_name}{Colors.RESET}: {_format_date(dt)} (~{age_days} days ago)"
+                        )
+
+                    if needed_days:
+                        suggested_days = max(needed_days)
+                        start_date = (now_utc - timedelta(days=suggested_days)).date().isoformat()
+                        print(
+                            f"   Try {Colors.YELLOW}--recent-days {suggested_days}{Colors.RESET} "
+                            f"(window starts ~{start_date}) to include these."
+                        )
+
+                if recent_near_misses_unknown:
+                    # These can never satisfy a strict recent-days filter because updated date can't be inferred.
+                    print(
+                        f"\n{Colors.GRAY}ℹ️  Also found {len(recent_near_misses_unknown)} downloadable board(s) with unknown updated dates; "
+                        f"they can't pass a strict {Colors.YELLOW}--recent-days{Colors.RESET} filter.{Colors.RESET}"
+                    )
+                    print(f"   Tip: Remove --recent-days to include them, or increase --date-sample-size for more thorough date inference.")
+
             print("   Try increasing --max, adjusting --min-views/--min-sounds, relaxing --recent-days, or use --debug to see why boards were filtered.")
         else:
             print(f"\n{Colors.YELLOW}⚠️  No downloadable boards found.{Colors.RESET}")
