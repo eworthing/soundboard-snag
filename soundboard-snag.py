@@ -420,14 +420,22 @@ class SoundboardSnag:
         # Strip trailing dots and spaces from name (Windows requirement)
         name = name.rstrip('. ')
 
-        # Title case if all lowercase or all uppercase (improves readability)
-        if name and (name.islower() or name.isupper()):
+        # Title case if all lowercase (improves readability).
+        # Skip all-uppercase names to preserve acronyms (e.g., "NASA", "HTML").
+        if name and name.islower():
             name = name.title()
 
         # Handle Windows reserved names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
         name_upper = name.upper()
         if name_upper in WINDOWS_RESERVED_NAMES:
             name = f'_{name}'  # Prefix with underscore to make it safe
+
+        # Truncate to stay within filesystem limits (255 bytes max on most OS)
+        max_name_len = 255 - len(ext.encode('utf-8'))
+        if len(name.encode('utf-8')) > max_name_len:
+            while len(name.encode('utf-8')) > max_name_len and name:
+                name = name[:-1]
+            name = name.rstrip('. ')
 
         # Reconstruct filename
         cleaned = name + ext
