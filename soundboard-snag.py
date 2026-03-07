@@ -80,6 +80,7 @@ REQUEST_DELAY = 0.5  # Delay between requests in seconds (be respectful to serve
 HTTP_TIMEOUT = 10  # Network timeout for requests (seconds)
 DOWNLOAD_TIMEOUT = 30  # Slightly higher timeout for actual file downloads
 HEADER_REQUEST_DELAY = 0.05  # Small delay between header checks when scanning many tracks
+DOWNLOAD_BUTTON_PATTERN = r'<a href="/sb/sound/(\d+)"[^>]*class="[^"]*btn-download-track'
 WINDOWS_RESERVED_NAMES = {'CON', 'PRN', 'AUX', 'NUL'}
 WINDOWS_RESERVED_NAMES.update({f'COM{i}' for i in range(1, 10)})
 WINDOWS_RESERVED_NAMES.update({f'LPT{i}' for i in range(1, 10)})
@@ -137,7 +138,7 @@ def _extract_board_slugs_from_search_html(html_content):
     )
     return [html.unescape(s).strip() for s in slugs if s and s.strip()]
 
-# ANSI color codes (cross-platform compatible)
+# ANSI color codes (disabled when stdout is not a TTY)
 class Colors:
     """ANSI color codes for terminal output."""
     RESET = '\033[0m'
@@ -148,16 +149,19 @@ class Colors:
     GREEN = '\033[92m'
     YELLOW = '\033[93m'
     BLUE = '\033[94m'
-    MAGENTA = '\033[95m'
     CYAN = '\033[96m'
-    WHITE = '\033[97m'
     GRAY = '\033[90m'
 
-    # Background colors (optional)
-    BG_RED = '\033[101m'
-    BG_GREEN = '\033[102m'
-    BG_YELLOW = '\033[103m'
-    BG_BLUE = '\033[104m'
+
+def _init_colors():
+    """Disable ANSI colors when stdout is not a TTY (e.g., piped or redirected)."""
+    if not hasattr(sys.stdout, 'isatty') or not sys.stdout.isatty():
+        for attr in list(vars(Colors)):
+            if not attr.startswith('_'):
+                setattr(Colors, attr, '')
+
+
+_init_colors()
 
 
 def _parse_http_datetime(value):
@@ -218,12 +222,6 @@ def _fetch_last_modified_detailed(url):
         return None, f"RANGE urlerror: {getattr(e, 'reason', str(e))}"
     except Exception as e:
         return None, f"RANGE error: {type(e).__name__}: {e}"
-
-
-def _fetch_last_modified(url):
-    """Fetch Last-Modified header for a URL (best-effort)."""
-    dt, _ = _fetch_last_modified_detailed(url)
-    return dt
 
 
 def _format_date(dt):
@@ -319,9 +317,15 @@ class SoundboardSnag:
         return f"{self.base_url}/sb/{_quote_path_segment(self.board_slug)}"
 
     def _board_output_dirname(self):
-        # Avoid accidental nested directories if a board name includes path separators.
+        # Sanitize board name for use as a directory name (cross-platform).
         name = re.sub(r'[\\/]+', '_', self.board_name).strip()
-        return name if name else re.sub(r'[\\/]+', '_', self.board_slug).strip() or 'soundboard'
+        if not name:
+            name = re.sub(r'[\\/]+', '_', self.board_slug).strip() or 'soundboard'
+        # Remove characters invalid on Windows/macOS/Linux filesystems
+        name = re.sub(r'[<>:"|?*]', '-', name)
+        name = re.sub(r'[\x00-\x1f\x7f]', '', name)
+        name = name.rstrip('. ')
+        return name or 'soundboard'
 
     def _fetch_page(self):
         """Fetch the soundboard page content.
@@ -340,10 +344,6 @@ class SoundboardSnag:
 
         try:
             with urlopen(req, timeout=HTTP_TIMEOUT) as response:
-                if response.getcode() != 200:
-                    raise RuntimeError(f"Unable to retrieve soundboard page. HTTP status: {response.getcode()}")
-
-                # Decode bytes to string
                 content = response.read().decode('utf-8')
                 return content
 
@@ -362,8 +362,7 @@ class SoundboardSnag:
             tuple: (has_downloads, download_count) where has_downloads is bool
                    and download_count is the number of download buttons found.
         """
-        download_pattern = r'<a href="/sb/sound/\d+"[^>]*class="[^"]*btn-download-track'
-        download_buttons = re.findall(download_pattern, html_content)
+        download_buttons = re.findall(DOWNLOAD_BUTTON_PATTERN, html_content)
         return (len(download_buttons) > 0, len(download_buttons))
 
     def _parse_sound_items(self, html_content):
@@ -376,8 +375,7 @@ class SoundboardSnag:
             return matches
 
         # Fallback: extract IDs only if pattern doesn't match
-        id_pattern = r'<a href="/sb/sound/(\d+)"[^>]*class="btn-download-track"'
-        sound_ids = re.findall(id_pattern, html_content)
+        sound_ids = re.findall(DOWNLOAD_BUTTON_PATTERN, html_content)
         return [(sid, '') for sid in sound_ids]
 
     def _sanitize_filename(self, raw_filename, sound_id, page_title):
@@ -484,13 +482,20 @@ class SoundboardSnag:
                 if os.path.isfile(filepath):
                     return None, final_filename  # None indicates skip
 
-                # Write file in chunks
-                with open(filepath, 'wb') as f:
-                    while True:
-                        chunk = response.read(CHUNK_SIZE)
-                        if not chunk:
-                            break
-                        f.write(chunk)
+                # Write file in chunks; remove partial file on failure
+                try:
+                    with open(filepath, 'wb') as f:
+                        while True:
+                            chunk = response.read(CHUNK_SIZE)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                except BaseException:
+                    try:
+                        os.remove(filepath)
+                    except OSError:
+                        pass
+                    raise
 
                 file_size_kb = os.path.getsize(filepath) / 1024
                 return True, (final_filename, file_size_kb)
@@ -499,7 +504,7 @@ class SoundboardSnag:
             return False, f"HTTP {e.code}: {e.reason}"
         except URLError as e:
             return False, f"Network error: {e.reason}"
-        except Exception as e:
+        except OSError as e:
             return False, str(e)
 
     def snag(self):
@@ -546,6 +551,7 @@ class SoundboardSnag:
         failed_count = 0
         consecutive_failures = 0
         max_consecutive_failures = 2  # Exit if this many failures in a row
+        early_exit = False
 
         for i, (sound_id, page_title) in enumerate(sound_items, 1):
             print(f"{Colors.GRAY}[{i}/{len(sound_items)}]{Colors.RESET} Snagging audio ID {Colors.CYAN}{sound_id}{Colors.RESET}...")
@@ -588,6 +594,7 @@ class SoundboardSnag:
                             except OSError:
                                 pass  # Directory not empty or other error, leave it
 
+                    early_exit = True
                     break
 
             # Add delay between downloads to be respectful to server
@@ -605,8 +612,36 @@ class SoundboardSnag:
             if not has_downloads:
                 print(f"  Note: This board has downloads disabled by the owner.")
 
-        return True
+        return not early_exit
 
+
+def _format_date_line(approx_updated, approx_source, board_date_stats, board_name, indent="  "):
+    """Format the approximate-updated-date display line."""
+    extra = ""
+    stats = board_date_stats.get(board_name)
+    if stats:
+        ok, total = stats
+        extra = f"; track headers: {ok}/{total}"
+    if approx_updated:
+        src = f" via {approx_source}" if approx_source else ""
+        return f"{indent}{Colors.GRAY}Updated: {_format_date(approx_updated)} (approx{src}{extra}){Colors.RESET}"
+    return f"{indent}{Colors.GRAY}Updated: unknown (approx{extra}){Colors.RESET}"
+
+
+def _format_skip_breakdown(skipped_buckets):
+    """Format the skipped-boards breakdown string, or empty string if none."""
+    parts = []
+    if skipped_buckets["views"]:
+        parts.append(f"views: {skipped_buckets['views']}")
+    if skipped_buckets["sounds"]:
+        parts.append(f"sounds: {skipped_buckets['sounds']}")
+    if skipped_buckets["updated_unknown"]:
+        parts.append(f"updated unknown: {skipped_buckets['updated_unknown']}")
+    if skipped_buckets["updated_too_old"]:
+        parts.append(f"updated too old: {skipped_buckets['updated_too_old']}")
+    if parts:
+        return f"   Skipped breakdown (may overlap): {', '.join(parts)}"
+    return ""
 
 
 def search_boards(
@@ -862,14 +897,12 @@ def search_boards(
                 sound_matches = re.findall(sound_pattern, board_html, re.DOTALL)
 
                 # Check if first sound has download button
-                download_pattern = r'<a href="/sb/sound/\d+"[^>]*class="[^"]*btn-download-track'
-                has_downloads = re.search(download_pattern, board_html) is not None
+                has_downloads = re.search(DOWNLOAD_BUTTON_PATTERN, board_html) is not None
                 if has_downloads:
                     boards_with_downloads_total += 1
 
                 # Extract downloadable sound IDs (more reliable for date checks than data-src)
-                download_id_pattern = r'<a href="/sb/sound/(\d+)"[^>]*class="[^"]*btn-download-track'
-                download_ids = re.findall(download_id_pattern, board_html)
+                download_ids = re.findall(DOWNLOAD_BUTTON_PATTERN, board_html)
                 # De-duplicate while preserving order
                 download_ids_deduped = []
                 seen_download_ids = set()
@@ -1119,21 +1152,7 @@ def search_boards(
                     print(f"  {status} {sound_count} sounds {Colors.GRAY}(views: {views if views else '0'}){Colors.RESET}")
 
                     if include_dates:
-                        if approx_updated:
-                            src = f" via {approx_source}" if approx_source else ""
-                            extra = ""
-                            stats = board_date_stats.get(board_name)
-                            if stats:
-                                ok, total = stats
-                                extra = f"; track headers: {ok}/{total}"
-                            print(f"  {Colors.GRAY}Updated: {_format_date(approx_updated)} (approx{src}{extra}){Colors.RESET}")
-                        else:
-                            extra = ""
-                            stats = board_date_stats.get(board_name)
-                            if stats:
-                                ok, total = stats
-                                extra = f"; track headers: {ok}/{total}"
-                            print(f"  {Colors.GRAY}Updated: unknown (approx{extra}){Colors.RESET}")
+                        print(_format_date_line(approx_updated, approx_source, board_date_stats, board_name))
 
                     # In debug mode, show why it was filtered
                     if debug and not meets_filters:
@@ -1155,7 +1174,7 @@ def search_boards(
                 # Add delay between board checks to be respectful to server
                 time.sleep(REQUEST_DELAY)
 
-            except Exception as e:
+            except (HTTPError, URLError, OSError, ValueError) as e:
                 boards_fetch_errors += 1
                 _progress_clear()
                 print(f"  {Colors.RED}Error: {e}{Colors.RESET}")
@@ -1201,17 +1220,9 @@ def search_boards(
                     print(
                         f"   Track headers overall: {track_headers_ok_total}/{track_headers_total_total} OK."
                     )
-            breakdown_parts = []
-            if skipped_buckets["views"]:
-                breakdown_parts.append(f"views: {skipped_buckets['views']}")
-            if skipped_buckets["sounds"]:
-                breakdown_parts.append(f"sounds: {skipped_buckets['sounds']}")
-            if skipped_buckets["updated_unknown"]:
-                breakdown_parts.append(f"updated unknown: {skipped_buckets['updated_unknown']}")
-            if skipped_buckets["updated_too_old"]:
-                breakdown_parts.append(f"updated too old: {skipped_buckets['updated_too_old']}")
-            if breakdown_parts:
-                print(f"   Skipped breakdown (may overlap): {', '.join(breakdown_parts)}")
+            breakdown = _format_skip_breakdown(skipped_buckets)
+            if breakdown:
+                print(breakdown)
 
             # If the date filter eliminated everything, suggest a more realistic --recent-days.
             if recent_threshold is not None:
@@ -1284,21 +1295,7 @@ def search_boards(
         if views:
             print(f"{Colors.GRAY}Views: {views}{Colors.RESET}")
         if include_dates:
-            if approx_updated:
-                src = f" via {approx_source}" if approx_source else ""
-                extra = ""
-                stats = board_date_stats.get(board_name)
-                if stats:
-                    ok, total = stats
-                    extra = f"; track headers: {ok}/{total}"
-                print(f"{Colors.GRAY}Updated: {_format_date(approx_updated)} (approx{src}{extra}){Colors.RESET}")
-            else:
-                extra = ""
-                stats = board_date_stats.get(board_name)
-                if stats:
-                    ok, total = stats
-                    extra = f"; track headers: {ok}/{total}"
-                print(f"{Colors.GRAY}Updated: unknown (approx{extra}){Colors.RESET}")
+            print(_format_date_line(approx_updated, approx_source, board_date_stats, board_name, indent=""))
         if tags:
             print(f"{Colors.GRAY}Tags: {', '.join(tags)}{Colors.RESET}")
 
@@ -1313,17 +1310,9 @@ def search_boards(
     # Show skipped boards summary if any were filtered out
     if skipped_count > 0:
         print(f"\n{Colors.YELLOW}ℹ️  {skipped_count} downloadable board(s) were skipped due to filter criteria.{Colors.RESET}")
-        breakdown_parts = []
-        if skipped_buckets["views"]:
-            breakdown_parts.append(f"views: {skipped_buckets['views']}")
-        if skipped_buckets["sounds"]:
-            breakdown_parts.append(f"sounds: {skipped_buckets['sounds']}")
-        if skipped_buckets["updated_unknown"]:
-            breakdown_parts.append(f"updated unknown: {skipped_buckets['updated_unknown']}")
-        if skipped_buckets["updated_too_old"]:
-            breakdown_parts.append(f"updated too old: {skipped_buckets['updated_too_old']}")
-        if breakdown_parts:
-            print(f"   Skipped breakdown (may overlap): {', '.join(breakdown_parts)}")
+        breakdown = _format_skip_breakdown(skipped_buckets)
+        if breakdown:
+            print(breakdown)
         if min_views > 0 or min_sounds > 0:
             print(f"   Adjust --min-views or --min-sounds to include them in results.")
 
@@ -1499,149 +1488,157 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
                 print(f"{Colors.RED}Error creating download root directory: {e}{Colors.RESET}")
                 sys.exit(1)
 
-    # Handle search-and-download mode
-    if args.search_and_download:
-        try:
-            results = search_boards(
-                args.search_and_download,
-                args.max,
-                args.debug,
-                args.min_views,
-                args.min_sounds,
-                include_dates=include_dates,
-                recent_days=args.recent_days,
-                sort_by=args.sort,
-                date_sample_size=args.date_sample_size,
-                progress=getattr(args, "progress", True),
-                verbose=getattr(args, "verbose", False),
-                logger=run_logger,
-            )
+    try:
+        # Handle search-and-download mode
+        if args.search_and_download:
+            try:
+                results = search_boards(
+                    args.search_and_download,
+                    args.max,
+                    args.debug,
+                    args.min_views,
+                    args.min_sounds,
+                    include_dates=include_dates,
+                    recent_days=args.recent_days,
+                    sort_by=args.sort,
+                    date_sample_size=args.date_sample_size,
+                    progress=getattr(args, "progress", True),
+                    verbose=getattr(args, "verbose", False),
+                    logger=run_logger,
+                )
 
-            if not results:
-                print(f"\n{Colors.YELLOW}No boards to download.{Colors.RESET}")
-                sys.exit(0)
+                if not results:
+                    print(f"\n{Colors.YELLOW}No boards to download.{Colors.RESET}")
+                    sys.exit(0)
 
-            # Download each board
-            downloadable_boards = [r for r in results if r[1]]  # r[1] is has_downloads
-            total_boards = len(downloadable_boards)
+                # Download each board
+                downloadable_boards = [r for r in results if r[1]]  # r[1] is has_downloads
+                total_boards = len(downloadable_boards)
 
-            print(f"\n{Colors.BOLD}{Colors.CYAN}Starting download of {total_boards} board(s)...{Colors.RESET}\n")
+                print(f"\n{Colors.BOLD}{Colors.CYAN}Starting download of {total_boards} board(s)...{Colors.RESET}\n")
 
-            successful = 0
-            failed = 0
+                successful = 0
+                failed = 0
 
-            for idx, (board_name, has_downloads, sounds_info, total_count, board_desc, category, views, tags, views_int, approx_updated, approx_source) in enumerate(downloadable_boards, 1):
-                print(f"\n{Colors.BOLD}{'='*80}")
-                print(f"Board {idx}/{total_boards}: {board_name}")
-                print(f"{'='*80}{Colors.RESET}\n")
+                for idx, (board_name, has_downloads, sounds_info, total_count, board_desc, category, views, tags, views_int, approx_updated, approx_source) in enumerate(downloadable_boards, 1):
+                    print(f"\n{Colors.BOLD}{'='*80}")
+                    print(f"Board {idx}/{total_boards}: {board_name}")
+                    print(f"{'='*80}{Colors.RESET}\n")
 
-                try:
-                    board_url = f"{BASE_URL}/sb/{board_name}"
-                    snag_tool = SoundboardSnag(board_url, download_root=download_root)
-                    success = snag_tool.snag()
+                    try:
+                        board_url = f"{BASE_URL}/sb/{_quote_path_segment(board_name)}"
+                        snag_tool = SoundboardSnag(board_url, download_root=download_root)
+                        success = snag_tool.snag()
 
-                    if success:
-                        successful += 1
-                    else:
+                        if success:
+                            successful += 1
+                        else:
+                            failed += 1
+
+                    except (HTTPError, URLError, OSError, ValueError, RuntimeError) as e:
+                        print(f"{Colors.RED}Error downloading {board_name}: {e}{Colors.RESET}")
                         failed += 1
 
-                except Exception as e:
-                    print(f"{Colors.RED}Error downloading {board_name}: {e}{Colors.RESET}")
-                    failed += 1
+                    # Add delay between boards
+                    if idx < total_boards:
+                        time.sleep(REQUEST_DELAY)
 
-                # Add delay between boards
-                if idx < total_boards:
-                    time.sleep(REQUEST_DELAY)
+                # Summary
+                print(f"\n{Colors.BOLD}{'='*80}")
+                print(f"{'DOWNLOAD SUMMARY':^80}")
+                print(f"{'='*80}{Colors.RESET}")
+                print(f"{Colors.GREEN}Successful: {successful}{Colors.RESET}")
+                if failed > 0:
+                    print(f"{Colors.RED}Failed: {failed}{Colors.RESET}")
+                print(f"{Colors.BOLD}Total: {total_boards}{Colors.RESET}\n")
 
-            # Summary
-            print(f"\n{Colors.BOLD}{'='*80}")
-            print(f"{'DOWNLOAD SUMMARY':^80}")
-            print(f"{'='*80}{Colors.RESET}")
-            print(f"{Colors.GREEN}Successful: {successful}{Colors.RESET}")
-            if failed > 0:
-                print(f"{Colors.RED}Failed: {failed}{Colors.RESET}")
-            print(f"{Colors.BOLD}Total: {total_boards}{Colors.RESET}\n")
+                sys.exit(0)
 
-            sys.exit(0)
+            except KeyboardInterrupt:
+                print("\n\nSearch and download cancelled by user.")
+                sys.exit(1)
+            except SystemExit:
+                raise
+            except Exception as e:
+                print(f"Search and download error: {e}")
+                sys.exit(1)
 
-        except KeyboardInterrupt:
-            print("\n\nSearch and download cancelled by user.")
-            sys.exit(1)
-        except Exception as e:
-            print(f"Search and download error: {e}")
-            sys.exit(1)
-        finally:
-            if run_logger:
-                run_logger.close()
+        # Handle search mode
+        if args.search:
+            try:
+                search_boards(
+                    args.search,
+                    args.max,
+                    args.debug,
+                    args.min_views,
+                    args.min_sounds,
+                    include_dates=include_dates,
+                    recent_days=args.recent_days,
+                    sort_by=args.sort,
+                    date_sample_size=args.date_sample_size,
+                    progress=getattr(args, "progress", True),
+                    verbose=getattr(args, "verbose", False),
+                    logger=run_logger,
+                )
+                sys.exit(0)
+            except KeyboardInterrupt:
+                print("\n\nSearch cancelled by user.")
+                sys.exit(1)
+            except SystemExit:
+                raise
+            except Exception as e:
+                print(f"Search error: {e}")
+                sys.exit(1)
 
-    # Handle search mode
-    if args.search:
-        try:
-            search_boards(
-                args.search,
-                args.max,
-                args.debug,
-                args.min_views,
-                args.min_sounds,
-                include_dates=include_dates,
-                recent_days=args.recent_days,
-                sort_by=args.sort,
-                date_sample_size=args.date_sample_size,
-                progress=getattr(args, "progress", True),
-                verbose=getattr(args, "verbose", False),
-                logger=run_logger,
-            )
-            sys.exit(0)
-        except KeyboardInterrupt:
-            print("\n\nSearch cancelled by user.")
-            sys.exit(1)
-        except Exception as e:
-            print(f"Search error: {e}")
-            sys.exit(1)
-        finally:
-            if run_logger:
-                run_logger.close()
+        # Get URL from command line (board name or full URL) or interactive input
+        if args.board:
+            # User provided board name - construct URL
+            soundboard_url = f"{BASE_URL}/sb/{_quote_path_segment(args.board)}"
+            print(f"{Colors.CYAN}Using board name: {args.board}{Colors.RESET}")
+            print(f"{Colors.GRAY}Constructed URL: {soundboard_url}{Colors.RESET}\n")
+        elif args.url:
+            soundboard_url = args.url
+        else:
+            print("Enter a soundboard.com page URL or board name.")
+            print("Example URL: https://www.soundboard.com/sb/starwars")
+            print("Example board name: starwars\n")
+            print("NOTE: When using VS Code debugger, set arguments in launch.json\n")
 
-    # Get URL from command line (board name or full URL) or interactive input
-    if args.board:
-        # User provided board name - construct URL
-        soundboard_url = f"{BASE_URL}/sb/{_quote_path_segment(args.board)}"
-        print(f"{Colors.CYAN}Using board name: {args.board}{Colors.RESET}")
-        print(f"{Colors.GRAY}Constructed URL: {soundboard_url}{Colors.RESET}\n")
-    elif args.url:
-        soundboard_url = args.url
-    else:
-        print("Enter a soundboard.com page URL or board name.")
-        print("Example URL: https://www.soundboard.com/sb/starwars")
-        print("Example board name: starwars\n")
-        print("NOTE: When using VS Code debugger, set arguments in launch.json\n")
+            try:
+                user_input = input("URL or board name: ").strip()
+            except EOFError:
+                print("\nError: No input received.")
+                print("For debugging, add arguments to launch configuration:")
+                print('  "args": ["--url", "https://www.soundboard.com/sb/starwars"]')
+                sys.exit(1)
 
-        try:
-            soundboard_url = input("URL: ").strip()
-        except EOFError:
-            print("\nError: No input received.")
-            print("For debugging, add arguments to launch configuration:")
-            print('  "args": ["--url", "https://www.soundboard.com/sb/starwars"]')
-            sys.exit(1)
+            # Detect if user entered a plain board name (no scheme/host)
+            if user_input and not user_input.startswith(('http://', 'https://')):
+                soundboard_url = f"{BASE_URL}/sb/{_quote_path_segment(user_input)}"
+                print(f"{Colors.CYAN}Using board name: {user_input}{Colors.RESET}")
+                print(f"{Colors.GRAY}Constructed URL: {soundboard_url}{Colors.RESET}\n")
+            else:
+                soundboard_url = user_input
 
-    # Run snag tool
-    try:
+        # Run snag tool
         snag_tool = SoundboardSnag(soundboard_url, download_root=download_root)
         success = snag_tool.snag()
 
         if not success:
             sys.exit(1)
 
-        # Interactive mode: wait for keypress
-        if not args.url:
+        # Interactive mode: wait for keypress (only when no CLI args were given)
+        if not args.url and not args.board:
             input("\nComplete. Press Enter to exit...")
 
     except (ValueError, RuntimeError) as e:
         print(f"Error: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
-        print("\n\nSnagging cancelled by user.")
+        print("\n\nCancelled by user.")
         sys.exit(1)
+    except SystemExit:
+        raise
     except Exception as e:
         print(f"Unexpected error: {type(e).__name__}: {e}")
         sys.exit(1)
