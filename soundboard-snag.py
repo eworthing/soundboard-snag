@@ -63,13 +63,22 @@ import json
 import math
 import os
 import re
+import socket
 import sys
 import time
+from collections import namedtuple
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse, quote, unquote
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
+
+
+BoardResult = namedtuple('BoardResult', [
+    'name', 'has_downloads', 'sounds_info', 'sound_count',
+    'description', 'category', 'views', 'tags',
+    'views_int', 'approx_updated', 'approx_source',
+])
 
 
 # Module-level constants
@@ -80,7 +89,21 @@ REQUEST_DELAY = 0.5  # Delay between requests in seconds (be respectful to serve
 HTTP_TIMEOUT = 10  # Network timeout for requests (seconds)
 DOWNLOAD_TIMEOUT = 30  # Slightly higher timeout for actual file downloads
 HEADER_REQUEST_DELAY = 0.05  # Small delay between header checks when scanning many tracks
-DOWNLOAD_BUTTON_PATTERN = r'<a href="/sb/sound/(\d+)"[^>]*class="[^"]*btn-download-track'
+DOWNLOAD_BUTTON_RE = re.compile(r'<a href="/sb/sound/(\d+)"[^>]*class="[^"]*btn-download-track')
+SOUND_ITEM_RE = re.compile(r'data-src="(\d+)".*?<span>([^<]+)</span>', re.DOTALL)
+BOARD_DESC_RE = re.compile(r'<p class="item-desc[^"]*"[^>]*>([^<]*)</p>')
+BOARD_CATEGORY_RE = re.compile(r'<strong>Category:\s*</strong>\s*<span class="text-muted">\s*([^<]+)</span>')
+BOARD_VIEWS_RE = re.compile(r'<strong>Views:\s*</strong>\s*<span class="text-muted">\s*([^<]+)</span>')
+BOARD_TAGS_SECTION_RE = re.compile(r'<strong>Tags:\s*</strong>(.*?)</div>', re.DOTALL)
+BOARD_TAG_RE = re.compile(r'<a[^>]*>([^<]+)</a>')
+UUID_PATTERN_RE = re.compile(
+    r'\d{6}-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}',
+    re.IGNORECASE,
+)
+SOUND_ITEM_DETAILED_RE = re.compile(
+    r'<div class="item r"[^>]*data-src="(\d+)"[^>]*>.*?<div class="item-title text-ellipsis">\s*<span>(.*?)</span>',
+    re.DOTALL,
+)
 WINDOWS_RESERVED_NAMES = {'CON', 'PRN', 'AUX', 'NUL'}
 WINDOWS_RESERVED_NAMES.update({f'COM{i}' for i in range(1, 10)})
 WINDOWS_RESERVED_NAMES.update({f'LPT{i}' for i in range(1, 10)})
@@ -204,7 +227,7 @@ def _fetch_last_modified_detailed(url):
             return None, f"HEAD http_{e.code}"
     except URLError as e:
         return None, f"HEAD urlerror: {getattr(e, 'reason', str(e))}"
-    except Exception as e:
+    except (OSError, socket.timeout) as e:
         return None, f"HEAD error: {type(e).__name__}: {e}"
 
     # Fallback: some servers block HEAD, so request a single byte
@@ -220,7 +243,7 @@ def _fetch_last_modified_detailed(url):
         return None, f"RANGE http_{e.code}"
     except URLError as e:
         return None, f"RANGE urlerror: {getattr(e, 'reason', str(e))}"
-    except Exception as e:
+    except (OSError, socket.timeout) as e:
         return None, f"RANGE error: {type(e).__name__}: {e}"
 
 
@@ -344,11 +367,13 @@ class SoundboardSnag:
 
         try:
             with urlopen(req, timeout=HTTP_TIMEOUT) as response:
-                content = response.read().decode('utf-8')
+                content = response.read().decode('utf-8', errors='replace')
                 return content
 
         except HTTPError as e:
             raise RuntimeError(f"HTTP Error {e.code}: {e.reason}")
+        except socket.timeout:
+            raise RuntimeError(f"Request timed out after {HTTP_TIMEOUT} seconds")
         except URLError as e:
             raise RuntimeError(f"Network error: {e.reason}")
 
@@ -362,20 +387,19 @@ class SoundboardSnag:
             tuple: (has_downloads, download_count) where has_downloads is bool
                    and download_count is the number of download buttons found.
         """
-        download_buttons = re.findall(DOWNLOAD_BUTTON_PATTERN, html_content)
+        download_buttons = DOWNLOAD_BUTTON_RE.findall(html_content)
         return (len(download_buttons) > 0, len(download_buttons))
 
     def _parse_sound_items(self, html_content):
         """Extract sound IDs and titles from the page HTML."""
         # Pattern matches: data-src="ID" ... <span>Title</span>
-        pattern = r'<div class="item r"[^>]*data-src="(\d+)"[^>]*>.*?<div class="item-title text-ellipsis">\s*<span>(.*?)</span>'
-        matches = re.findall(pattern, html_content, re.DOTALL)
+        matches = SOUND_ITEM_DETAILED_RE.findall(html_content)
 
         if matches:
             return matches
 
         # Fallback: extract IDs only if pattern doesn't match
-        sound_ids = re.findall(DOWNLOAD_BUTTON_PATTERN, html_content)
+        sound_ids = DOWNLOAD_BUTTON_RE.findall(html_content)
         return [(sid, '') for sid in sound_ids]
 
     def _sanitize_filename(self, raw_filename, sound_id, page_title):
@@ -386,12 +410,7 @@ class SoundboardSnag:
         cleaned = html.unescape(cleaned)
 
         # Remove UUID patterns (e.g., 227896-abc123-...)
-        cleaned = re.sub(
-            r'\d{6}-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}',
-            '',
-            cleaned,
-            flags=re.IGNORECASE
-        )
+        cleaned = UUID_PATTERN_RE.sub('', cleaned)
 
         # Use page title if filename is empty after UUID removal
         if not cleaned.strip() or cleaned.strip().startswith('.'):
@@ -652,6 +671,116 @@ def _format_skip_breakdown(skipped_buckets):
     return ""
 
 
+def _parse_board_html(board_html):
+    """Parse a board page's HTML and extract metadata.
+
+    Returns a dict with keys: sound_matches, has_downloads, download_ids,
+    description, category, views, tags, sounds_info, sound_count, views_int.
+    """
+    sound_matches = SOUND_ITEM_RE.findall(board_html)
+
+    has_downloads = DOWNLOAD_BUTTON_RE.search(board_html) is not None
+
+    # Extract downloadable sound IDs (more reliable for date checks than data-src)
+    download_ids = DOWNLOAD_BUTTON_RE.findall(board_html)
+    # De-duplicate while preserving order
+    seen_ids = set()
+    download_ids_deduped = []
+    for sid in download_ids:
+        if sid not in seen_ids:
+            download_ids_deduped.append(sid)
+            seen_ids.add(sid)
+
+    # Extract board description
+    desc_match = BOARD_DESC_RE.search(board_html)
+    description = html.unescape(desc_match.group(1).strip()) if desc_match and desc_match.group(1).strip() else ""
+
+    # Extract category
+    cat_match = BOARD_CATEGORY_RE.search(board_html)
+    category = html.unescape(cat_match.group(1).strip()) if cat_match else ""
+
+    # Extract views
+    views_match = BOARD_VIEWS_RE.search(board_html)
+    views = html.unescape(views_match.group(1).strip()) if views_match else ""
+
+    # Extract tags
+    tags_match = BOARD_TAGS_SECTION_RE.search(board_html)
+    tags = []
+    if tags_match:
+        tags_html = tags_match.group(1)
+        tags = [html.unescape(t.strip()) for t in BOARD_TAG_RE.findall(tags_html) if t.strip()]
+
+    # Extract filenames for preview (first 10)
+    sounds_info = []
+    for sound_id, title in sound_matches[:10]:
+        title_clean = html.unescape(title.strip())
+        sounds_info.append((sound_id, title_clean))
+
+    sound_count = len(sound_matches)
+    views_int = _parse_views_count(views)
+
+    return {
+        'sound_matches': sound_matches,
+        'has_downloads': has_downloads,
+        'download_ids': download_ids_deduped,
+        'description': description,
+        'category': category,
+        'views': views,
+        'tags': tags,
+        'sounds_info': sounds_info,
+        'sound_count': sound_count,
+        'views_int': views_int,
+    }
+
+
+def _print_search_results(results, include_dates, board_date_stats,
+                          skipped_count, skipped_buckets, min_views, min_sounds):
+    """Print the formatted search results table."""
+    print(f"\n{Colors.BOLD}{'='*80}")
+    print(f"{'SEARCH RESULTS':^80}")
+    print(f"{'='*80}{Colors.RESET}\n")
+
+    for board in results:
+        if board.has_downloads:
+            status = f"{Colors.GREEN}✓ DOWNLOADABLE{Colors.RESET}"
+        else:
+            status = f"{Colors.RED}✗ PLAY-ONLY{Colors.RESET}"
+        print(f"{Colors.BOLD}Board:{Colors.RESET} {Colors.CYAN}{board.name}{Colors.RESET} - {status} {Colors.GRAY}({board.sound_count} sounds total){Colors.RESET}")
+        print(f"{Colors.GRAY}URL: {BASE_URL}/sb/{_quote_path_segment(board.name)}{Colors.RESET}")
+
+        if board.description:
+            print(f"{Colors.GRAY}Description: {board.description}{Colors.RESET}")
+        if board.category:
+            print(f"{Colors.GRAY}Category: {board.category}{Colors.RESET}")
+        if board.views:
+            print(f"{Colors.GRAY}Views: {board.views}{Colors.RESET}")
+        if include_dates:
+            print(_format_date_line(board.approx_updated, board.approx_source, board_date_stats, board.name, indent=""))
+        if board.tags:
+            print(f"{Colors.GRAY}Tags: {', '.join(board.tags)}{Colors.RESET}")
+
+        if board.sounds_info:
+            print(f"\n{Colors.BOLD}Sample files (showing {len(board.sounds_info)} of {board.sound_count}):{Colors.RESET}")
+            for idx, (sound_id, title) in enumerate(board.sounds_info, 1):
+                print(f"  {Colors.YELLOW}{idx:2}.{Colors.RESET} {title}")
+        print("\n")  # Two newlines after each board
+
+    print(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
+
+    # Show skipped boards summary if any were filtered out
+    if skipped_count > 0:
+        print(f"\n{Colors.YELLOW}ℹ️  {skipped_count} downloadable board(s) were skipped due to filter criteria.{Colors.RESET}")
+        breakdown = _format_skip_breakdown(skipped_buckets)
+        if breakdown:
+            print(breakdown)
+        if min_views > 0 or min_sounds > 0:
+            print(f"   Adjust --min-views or --min-sounds to include them in results.")
+
+    if results and results[0].has_downloads:
+        print(f"\n{Colors.BOLD}To download a board, use:{Colors.RESET}")
+        print(f"  {Colors.GRAY}python3 soundboard-snag.py --board \"{results[0].name}\"{Colors.RESET}")
+
+
 def search_boards(
     query,
     max_results=20,
@@ -829,7 +958,7 @@ def search_boards(
         try:
             req = Request(search_url, headers={'User-Agent': USER_AGENT})
             with urlopen(req, timeout=HTTP_TIMEOUT) as response:
-                html_content = response.read().decode('utf-8')
+                html_content = response.read().decode('utf-8', errors='replace')
             if logger:
                 logger.event("search_page_fetch_ok", page=page, url=search_url, bytes=len(html_content))
         except (HTTPError, URLError) as e:
@@ -896,69 +1025,29 @@ def search_boards(
                 req = Request(board_url, headers={'User-Agent': USER_AGENT})
 
                 with urlopen(req, timeout=HTTP_TIMEOUT) as response:
-                    board_html = response.read().decode('utf-8')
+                    board_html = response.read().decode('utf-8', errors='replace')
                 if logger:
                     logger.event("board_fetch_ok", board=board_name, url=board_url, bytes=len(board_html))
 
-                # Extract sound IDs and titles
-                sound_pattern = r'data-src="(\d+)".*?<span>([^<]+)</span>'
-                sound_matches = re.findall(sound_pattern, board_html, re.DOTALL)
+                board_info = _parse_board_html(board_html)
+                sound_matches = board_info['sound_matches']
+                has_downloads = board_info['has_downloads']
+                download_ids_deduped = board_info['download_ids']
+                board_desc = board_info['description']
+                category = board_info['category']
+                views = board_info['views']
+                tags = board_info['tags']
+                sounds_info = board_info['sounds_info']
+                sound_count = board_info['sound_count']
+                views_int = board_info['views_int']
 
-                # Check if first sound has download button
-                has_downloads = re.search(DOWNLOAD_BUTTON_PATTERN, board_html) is not None
                 if has_downloads:
                     boards_with_downloads_total += 1
-
-                # Extract downloadable sound IDs (more reliable for date checks than data-src)
-                download_ids = re.findall(DOWNLOAD_BUTTON_PATTERN, board_html)
-                # De-duplicate while preserving order
-                download_ids_deduped = []
-                seen_download_ids = set()
-                for sid in download_ids:
-                    if sid not in seen_download_ids:
-                        download_ids_deduped.append(sid)
-                        seen_download_ids.add(sid)
-
-                # Extract board description
-                desc_pattern = r'<p class="item-desc[^"]*"[^>]*>([^<]*)</p>'
-                desc_match = re.search(desc_pattern, board_html)
-                board_desc = html.unescape(desc_match.group(1).strip()) if desc_match and desc_match.group(1).strip() else ""
-
-                # Extract category
-                cat_pattern = r'<strong>Category:\s*</strong>\s*<span class="text-muted">\s*([^<]+)</span>'
-                cat_match = re.search(cat_pattern, board_html)
-                category = html.unescape(cat_match.group(1).strip()) if cat_match else ""
-
-                # Extract views
-                views_pattern = r'<strong>Views:\s*</strong>\s*<span class="text-muted">\s*([^<]+)</span>'
-                views_match = re.search(views_pattern, board_html)
-                views = html.unescape(views_match.group(1).strip()) if views_match else ""
-
-                # Extract tags
-                tags_section = r'<strong>Tags:\s*</strong>(.*?)</div>'
-                tags_match = re.search(tags_section, board_html, re.DOTALL)
-                tags = []
-                if tags_match:
-                    tags_html = tags_match.group(1)
-                    tag_pattern = r'<a[^>]*>([^<]+)</a>'
-                    tags = [html.unescape(t.strip()) for t in re.findall(tag_pattern, tags_html) if t.strip()]
-
-                # Extract filenames for preview (first 10)
-                sounds_info = []
-                preview_limit = 10  # Show first 10 files
-                for sound_id, title in sound_matches[:preview_limit]:
-                    title_clean = html.unescape(title.strip())
-                    sounds_info.append((sound_id, title_clean))
 
                 if has_downloads:
                     status = f"{Colors.GREEN}✓{Colors.RESET}"
                 else:
                     status = f"{Colors.RED}✗{Colors.RESET}"
-                sound_count = len(sound_matches)
-                preview_count = len(sounds_info)
-
-                # Convert views to integer for sorting (handle commas and missing values)
-                views_int = _parse_views_count(views)
 
                 fails_basic_filters = (
                     (min_views > 0 and views_int < min_views)
@@ -1169,7 +1258,13 @@ def search_boards(
 
                 # Only add to results if it meets filters
                 if meets_filters:
-                    results.append((board_name, has_downloads, sounds_info, sound_count, board_desc, category, views, tags, views_int, approx_updated, approx_source))
+                    results.append(BoardResult(
+                        name=board_name, has_downloads=has_downloads,
+                        sounds_info=sounds_info, sound_count=sound_count,
+                        description=board_desc, category=category,
+                        views=views, tags=tags, views_int=views_int,
+                        approx_updated=approx_updated, approx_source=approx_source,
+                    ))
 
                     # Count downloadable boards that meet filters
                     if has_downloads and meets_filters:
@@ -1205,15 +1300,14 @@ def search_boards(
     _progress_clear()
 
     # Filter results to only show downloadable boards (already done in meets_filters logic)
-    results = [r for r in results if r[1]]  # Filter by has_downloads
+    results = [r for r in results if r.has_downloads]
 
     # Sort results
     if sort_by == "recent":
         min_date = datetime.min.replace(tzinfo=timezone.utc)
-        results.sort(key=lambda x: x[9] or min_date, reverse=True)
+        results.sort(key=lambda x: x.approx_updated or min_date, reverse=True)
     else:
-        # Sort by views (highest first) - views_int is at index 8
-        results.sort(key=lambda x: x[8], reverse=True)
+        results.sort(key=lambda x: x.views_int, reverse=True)
 
     if not results:
         if skipped_count > 0:
@@ -1284,50 +1378,8 @@ def search_boards(
             )
         return results
 
-    print(f"\n{Colors.BOLD}{'='*80}")
-    print(f"{'SEARCH RESULTS':^80}")
-    print(f"{'='*80}{Colors.RESET}\n")
-
-    for board_name, has_downloads, sounds_info, total_count, board_desc, category, views, tags, views_int, approx_updated, approx_source in results:
-        if has_downloads:
-            status = f"{Colors.GREEN}✓ DOWNLOADABLE{Colors.RESET}"
-        else:
-            status = f"{Colors.RED}✗ PLAY-ONLY{Colors.RESET}"
-        print(f"{Colors.BOLD}Board:{Colors.RESET} {Colors.CYAN}{board_name}{Colors.RESET} - {status} {Colors.GRAY}({total_count} sounds total){Colors.RESET}")
-        print(f"{Colors.GRAY}URL: {BASE_URL}/sb/{_quote_path_segment(board_name)}{Colors.RESET}")
-
-        if board_desc:
-            print(f"{Colors.GRAY}Description: {board_desc}{Colors.RESET}")
-        if category:
-            print(f"{Colors.GRAY}Category: {category}{Colors.RESET}")
-        if views:
-            print(f"{Colors.GRAY}Views: {views}{Colors.RESET}")
-        if include_dates:
-            print(_format_date_line(approx_updated, approx_source, board_date_stats, board_name, indent=""))
-        if tags:
-            print(f"{Colors.GRAY}Tags: {', '.join(tags)}{Colors.RESET}")
-
-        if sounds_info:
-            print(f"\n{Colors.BOLD}Sample files (showing {len(sounds_info)} of {total_count}):{Colors.RESET}")
-            for idx, (sound_id, title) in enumerate(sounds_info, 1):
-                print(f"  {Colors.YELLOW}{idx:2}.{Colors.RESET} {title}")
-        print("\n")  # Two newlines after each board
-
-    print(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
-
-    # Show skipped boards summary if any were filtered out
-    if skipped_count > 0:
-        print(f"\n{Colors.YELLOW}ℹ️  {skipped_count} downloadable board(s) were skipped due to filter criteria.{Colors.RESET}")
-        breakdown = _format_skip_breakdown(skipped_buckets)
-        if breakdown:
-            print(breakdown)
-        if min_views > 0 or min_sounds > 0:
-            print(f"   Adjust --min-views or --min-sounds to include them in results.")
-
-    if results and results[0][1]:
-        print(f"\n{Colors.BOLD}To download a board, use:{Colors.RESET}")
-        print(f"  {Colors.GRAY}python3 soundboard-snag.py --board \"{results[0][0]}\"{Colors.RESET}")
-
+    _print_search_results(results, include_dates, board_date_stats,
+                          skipped_count, skipped_buckets, min_views, min_sounds)
     return results
 
 def main():
@@ -1473,10 +1525,10 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
         print(f"{Colors.RED}Error: --recent-days must be a positive integer.{Colors.RESET}")
         sys.exit(1)
 
-    include_dates = args.include_dates or args.recent_days is not None or args.sort == "recent"
+    include_dates = args.include_dates or (args.recent_days is not None) or (args.sort == "recent")
 
     run_logger = None
-    if getattr(args, "log_file", None):
+    if args.log_file:
         try:
             run_logger = JsonlLogger(args.log_file)
         except Exception as e:
@@ -1510,8 +1562,8 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
                     recent_days=args.recent_days,
                     sort_by=args.sort,
                     date_sample_size=args.date_sample_size,
-                    progress=getattr(args, "progress", True),
-                    verbose=getattr(args, "verbose", False),
+                    progress=args.progress,
+                    verbose=args.verbose,
                     logger=run_logger,
                 )
 
@@ -1520,7 +1572,7 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
                     sys.exit(0)
 
                 # Download each board
-                downloadable_boards = [r for r in results if r[1]]  # r[1] is has_downloads
+                downloadable_boards = [r for r in results if r.has_downloads]
                 total_boards = len(downloadable_boards)
 
                 print(f"\n{Colors.BOLD}{Colors.CYAN}Starting download of {total_boards} board(s)...{Colors.RESET}\n")
@@ -1528,13 +1580,13 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
                 successful = 0
                 failed = 0
 
-                for idx, (board_name, has_downloads, sounds_info, total_count, board_desc, category, views, tags, views_int, approx_updated, approx_source) in enumerate(downloadable_boards, 1):
+                for idx, board in enumerate(downloadable_boards, 1):
                     print(f"\n{Colors.BOLD}{'='*80}")
-                    print(f"Board {idx}/{total_boards}: {board_name}")
+                    print(f"Board {idx}/{total_boards}: {board.name}")
                     print(f"{'='*80}{Colors.RESET}\n")
 
                     try:
-                        board_url = f"{BASE_URL}/sb/{_quote_path_segment(board_name)}"
+                        board_url = f"{BASE_URL}/sb/{_quote_path_segment(board.name)}"
                         snag_tool = SoundboardSnag(board_url, download_root=download_root)
                         success = snag_tool.snag()
 
@@ -1544,7 +1596,7 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
                             failed += 1
 
                     except (HTTPError, URLError, OSError, ValueError, RuntimeError) as e:
-                        print(f"{Colors.RED}Error downloading {board_name}: {e}{Colors.RESET}")
+                        print(f"{Colors.RED}Error downloading {board.name}: {e}{Colors.RESET}")
                         failed += 1
 
                     # Add delay between boards
@@ -1584,8 +1636,8 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
                     recent_days=args.recent_days,
                     sort_by=args.sort,
                     date_sample_size=args.date_sample_size,
-                    progress=getattr(args, "progress", True),
-                    verbose=getattr(args, "verbose", False),
+                    progress=args.progress,
+                    verbose=args.verbose,
                     logger=run_logger,
                 )
                 sys.exit(0)
