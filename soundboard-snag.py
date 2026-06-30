@@ -67,6 +67,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from typing import List, NamedTuple, Optional, Tuple
 from urllib.parse import urlparse, quote, unquote
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -83,6 +84,28 @@ HEADER_REQUEST_DELAY = 0.05  # Small delay between header checks when scanning m
 WINDOWS_RESERVED_NAMES = {'CON', 'PRN', 'AUX', 'NUL'}
 WINDOWS_RESERVED_NAMES.update({f'COM{i}' for i in range(1, 10)})
 WINDOWS_RESERVED_NAMES.update({f'LPT{i}' for i in range(1, 10)})
+
+
+class BoardResult(NamedTuple):
+    """A single soundboard search result.
+
+    Replaces the former 11-field positional tuple returned by ``search_boards``
+    so callers reference fields by name instead of fragile index positions
+    (``r[8]``, ``x[9]``...). Being a ``NamedTuple`` it is still a plain tuple at
+    runtime — indexing and unpacking continue to work — so introducing it is
+    behavior-preserving.
+    """
+    board_name: str
+    has_downloads: bool
+    sounds_info: List[Tuple[str, str]]
+    total_count: int
+    board_desc: str
+    category: str
+    views: str
+    tags: List[str]
+    views_int: int
+    approx_updated: Optional[datetime]
+    approx_source: Optional[str]
 
 
 def _quote_path_segment(value):
@@ -643,7 +666,7 @@ def search_boards(
         verbose: If True, print detailed per-step output (requests, parsing, filters, dates)
         logger: Optional JsonlLogger for capturing structured run details
     Returns:
-        List of tuples: (board_name, has_downloads, sounds_list, total_count, board_desc, category, views, tags, views_int, approx_updated, approx_source)
+        List[BoardResult]: one named record per board (fields accessed by name).
     """
     encoded_query = quote(query)
 
@@ -1142,7 +1165,19 @@ def search_boards(
 
                 # Only add to results if it meets filters
                 if meets_filters:
-                    results.append((board_name, has_downloads, sounds_info, sound_count, board_desc, category, views, tags, views_int, approx_updated, approx_source))
+                    results.append(BoardResult(
+                        board_name=board_name,
+                        has_downloads=has_downloads,
+                        sounds_info=sounds_info,
+                        total_count=sound_count,
+                        board_desc=board_desc,
+                        category=category,
+                        views=views,
+                        tags=tags,
+                        views_int=views_int,
+                        approx_updated=approx_updated,
+                        approx_source=approx_source,
+                    ))
 
                     # Count downloadable boards that meet filters
                     if has_downloads and meets_filters:
@@ -1178,15 +1213,15 @@ def search_boards(
     _progress_clear()
 
     # Filter results to only show downloadable boards (already done in meets_filters logic)
-    results = [r for r in results if r[1]]  # Filter by has_downloads
+    results = [r for r in results if r.has_downloads]
 
     # Sort results
     if sort_by == "recent":
         min_date = datetime.min.replace(tzinfo=timezone.utc)
-        results.sort(key=lambda x: x[9] or min_date, reverse=True)
+        results.sort(key=lambda x: x.approx_updated or min_date, reverse=True)
     else:
-        # Sort by views (highest first) - views_int is at index 8
-        results.sort(key=lambda x: x[8], reverse=True)
+        # Sort by views (highest first)
+        results.sort(key=lambda x: x.views_int, reverse=True)
 
     if not results:
         if skipped_count > 0:
@@ -1269,42 +1304,42 @@ def search_boards(
     print(f"{'SEARCH RESULTS':^80}")
     print(f"{'='*80}{Colors.RESET}\n")
 
-    for board_name, has_downloads, sounds_info, total_count, board_desc, category, views, tags, views_int, approx_updated, approx_source in results:
-        if has_downloads:
+    for board in results:
+        if board.has_downloads:
             status = f"{Colors.GREEN}✓ DOWNLOADABLE{Colors.RESET}"
         else:
             status = f"{Colors.RED}✗ PLAY-ONLY{Colors.RESET}"
-        print(f"{Colors.BOLD}Board:{Colors.RESET} {Colors.CYAN}{board_name}{Colors.RESET} - {status} {Colors.GRAY}({total_count} sounds total){Colors.RESET}")
-        print(f"{Colors.GRAY}URL: {BASE_URL}/sb/{_quote_path_segment(board_name)}{Colors.RESET}")
+        print(f"{Colors.BOLD}Board:{Colors.RESET} {Colors.CYAN}{board.board_name}{Colors.RESET} - {status} {Colors.GRAY}({board.total_count} sounds total){Colors.RESET}")
+        print(f"{Colors.GRAY}URL: {BASE_URL}/sb/{_quote_path_segment(board.board_name)}{Colors.RESET}")
 
-        if board_desc:
-            print(f"{Colors.GRAY}Description: {board_desc}{Colors.RESET}")
-        if category:
-            print(f"{Colors.GRAY}Category: {category}{Colors.RESET}")
-        if views:
-            print(f"{Colors.GRAY}Views: {views}{Colors.RESET}")
+        if board.board_desc:
+            print(f"{Colors.GRAY}Description: {board.board_desc}{Colors.RESET}")
+        if board.category:
+            print(f"{Colors.GRAY}Category: {board.category}{Colors.RESET}")
+        if board.views:
+            print(f"{Colors.GRAY}Views: {board.views}{Colors.RESET}")
         if include_dates:
-            if approx_updated:
-                src = f" via {approx_source}" if approx_source else ""
+            if board.approx_updated:
+                src = f" via {board.approx_source}" if board.approx_source else ""
                 extra = ""
-                stats = board_date_stats.get(board_name)
+                stats = board_date_stats.get(board.board_name)
                 if stats:
                     ok, total = stats
                     extra = f"; track headers: {ok}/{total}"
-                print(f"{Colors.GRAY}Updated: {_format_date(approx_updated)} (approx{src}{extra}){Colors.RESET}")
+                print(f"{Colors.GRAY}Updated: {_format_date(board.approx_updated)} (approx{src}{extra}){Colors.RESET}")
             else:
                 extra = ""
-                stats = board_date_stats.get(board_name)
+                stats = board_date_stats.get(board.board_name)
                 if stats:
                     ok, total = stats
                     extra = f"; track headers: {ok}/{total}"
                 print(f"{Colors.GRAY}Updated: unknown (approx{extra}){Colors.RESET}")
-        if tags:
-            print(f"{Colors.GRAY}Tags: {', '.join(tags)}{Colors.RESET}")
+        if board.tags:
+            print(f"{Colors.GRAY}Tags: {', '.join(board.tags)}{Colors.RESET}")
 
-        if sounds_info:
-            print(f"\n{Colors.BOLD}Sample files (showing {len(sounds_info)} of {total_count}):{Colors.RESET}")
-            for idx, (sound_id, title) in enumerate(sounds_info, 1):
+        if board.sounds_info:
+            print(f"\n{Colors.BOLD}Sample files (showing {len(board.sounds_info)} of {board.total_count}):{Colors.RESET}")
+            for idx, (sound_id, title) in enumerate(board.sounds_info, 1):
                 print(f"  {Colors.YELLOW}{idx:2}.{Colors.RESET} {title}")
         print("\n")  # Two newlines after each board
 
@@ -1327,9 +1362,9 @@ def search_boards(
         if min_views > 0 or min_sounds > 0:
             print(f"   Adjust --min-views or --min-sounds to include them in results.")
 
-    if results and results[0][1]:
+    if results and results[0].has_downloads:
         print(f"\n{Colors.BOLD}To download a board, use:{Colors.RESET}")
-        print(f"  {Colors.GRAY}python3 soundboard-snag.py --board \"{results[0][0]}\"{Colors.RESET}")
+        print(f"  {Colors.GRAY}python3 soundboard-snag.py --board \"{results[0].board_name}\"{Colors.RESET}")
 
     return results
 
@@ -1522,7 +1557,7 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
                 sys.exit(0)
 
             # Download each board
-            downloadable_boards = [r for r in results if r[1]]  # r[1] is has_downloads
+            downloadable_boards = [r for r in results if r.has_downloads]
             total_boards = len(downloadable_boards)
 
             print(f"\n{Colors.BOLD}{Colors.CYAN}Starting download of {total_boards} board(s)...{Colors.RESET}\n")
@@ -1530,13 +1565,13 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
             successful = 0
             failed = 0
 
-            for idx, (board_name, has_downloads, sounds_info, total_count, board_desc, category, views, tags, views_int, approx_updated, approx_source) in enumerate(downloadable_boards, 1):
+            for idx, board in enumerate(downloadable_boards, 1):
                 print(f"\n{Colors.BOLD}{'='*80}")
-                print(f"Board {idx}/{total_boards}: {board_name}")
+                print(f"Board {idx}/{total_boards}: {board.board_name}")
                 print(f"{'='*80}{Colors.RESET}\n")
 
                 try:
-                    board_url = f"{BASE_URL}/sb/{board_name}"
+                    board_url = f"{BASE_URL}/sb/{board.board_name}"
                     snag_tool = SoundboardSnag(board_url, download_root=download_root)
                     success = snag_tool.snag()
 
@@ -1546,7 +1581,7 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
                         failed += 1
 
                 except Exception as e:
-                    print(f"{Colors.RED}Error downloading {board_name}: {e}{Colors.RESET}")
+                    print(f"{Colors.RED}Error downloading {board.board_name}: {e}{Colors.RESET}")
                     failed += 1
 
                 # Add delay between boards
