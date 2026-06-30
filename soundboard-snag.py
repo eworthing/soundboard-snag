@@ -204,6 +204,38 @@ def _evaluate_filters(views_int, sound_count, approx_updated,
     return (not failures, failures)
 
 
+def _format_updated_line(approx_updated, approx_source, stats):
+    """Format the 'Updated: ...' detail line (pure; no color or indent).
+
+    ``stats`` is ``None`` or an ``(ok, total)`` pair of track-header counts.
+    Returns e.g. ``'Updated: 2025-01-02 (approx via track; track headers: 3/5)'``
+    or ``'Updated: unknown (approx)'``. Callers add their own color/indent.
+    """
+    extra = ""
+    if stats:
+        ok, total = stats
+        extra = f"; track headers: {ok}/{total}"
+    if approx_updated:
+        src = f" via {approx_source}" if approx_source else ""
+        return f"Updated: {_format_date(approx_updated)} (approx{src}{extra})"
+    return f"Updated: unknown (approx{extra})"
+
+
+def _format_skipped_breakdown(skipped_buckets):
+    """Join the non-zero skip-bucket counts into the 'breakdown' string.
+
+    Returns '' when every bucket is zero. Pure; order is fixed for stable output.
+    """
+    labels = (
+        ("views", "views"),
+        ("sounds", "sounds"),
+        ("updated_unknown", "updated unknown"),
+        ("updated_too_old", "updated too old"),
+    )
+    parts = [f"{label}: {skipped_buckets[key]}" for key, label in labels if skipped_buckets.get(key)]
+    return ", ".join(parts)
+
+
 def _quote_path_segment(value):
     """Quote a URL path segment without double-encoding existing percent escapes."""
     # Keep '%' safe so values like "PRINS%20JULIUS" aren't double-encoded.
@@ -1174,21 +1206,8 @@ def search_boards(
                     print(f"  {status} {sound_count} sounds {Colors.GRAY}(views: {views if views else '0'}){Colors.RESET}")
 
                     if include_dates:
-                        if approx_updated:
-                            src = f" via {approx_source}" if approx_source else ""
-                            extra = ""
-                            stats = board_date_stats.get(board_name)
-                            if stats:
-                                ok, total = stats
-                                extra = f"; track headers: {ok}/{total}"
-                            print(f"  {Colors.GRAY}Updated: {_format_date(approx_updated)} (approx{src}{extra}){Colors.RESET}")
-                        else:
-                            extra = ""
-                            stats = board_date_stats.get(board_name)
-                            if stats:
-                                ok, total = stats
-                                extra = f"; track headers: {ok}/{total}"
-                            print(f"  {Colors.GRAY}Updated: unknown (approx{extra}){Colors.RESET}")
+                        updated_line = _format_updated_line(approx_updated, approx_source, board_date_stats.get(board_name))
+                        print(f"  {Colors.GRAY}{updated_line}{Colors.RESET}")
 
                     # In debug mode, show why it was filtered
                     if debug and not meets_filters:
@@ -1268,17 +1287,9 @@ def search_boards(
                     print(
                         f"   Track headers overall: {track_headers_ok_total}/{track_headers_total_total} OK."
                     )
-            breakdown_parts = []
-            if skipped_buckets["views"]:
-                breakdown_parts.append(f"views: {skipped_buckets['views']}")
-            if skipped_buckets["sounds"]:
-                breakdown_parts.append(f"sounds: {skipped_buckets['sounds']}")
-            if skipped_buckets["updated_unknown"]:
-                breakdown_parts.append(f"updated unknown: {skipped_buckets['updated_unknown']}")
-            if skipped_buckets["updated_too_old"]:
-                breakdown_parts.append(f"updated too old: {skipped_buckets['updated_too_old']}")
-            if breakdown_parts:
-                print(f"   Skipped breakdown (may overlap): {', '.join(breakdown_parts)}")
+            breakdown = _format_skipped_breakdown(skipped_buckets)
+            if breakdown:
+                print(f"   Skipped breakdown (may overlap): {breakdown}")
 
             # If the date filter eliminated everything, suggest a more realistic --recent-days.
             if recent_threshold is not None:
@@ -1351,21 +1362,8 @@ def search_boards(
         if board.views:
             print(f"{Colors.GRAY}Views: {board.views}{Colors.RESET}")
         if include_dates:
-            if board.approx_updated:
-                src = f" via {board.approx_source}" if board.approx_source else ""
-                extra = ""
-                stats = board_date_stats.get(board.board_name)
-                if stats:
-                    ok, total = stats
-                    extra = f"; track headers: {ok}/{total}"
-                print(f"{Colors.GRAY}Updated: {_format_date(board.approx_updated)} (approx{src}{extra}){Colors.RESET}")
-            else:
-                extra = ""
-                stats = board_date_stats.get(board.board_name)
-                if stats:
-                    ok, total = stats
-                    extra = f"; track headers: {ok}/{total}"
-                print(f"{Colors.GRAY}Updated: unknown (approx{extra}){Colors.RESET}")
+            updated_line = _format_updated_line(board.approx_updated, board.approx_source, board_date_stats.get(board.board_name))
+            print(f"{Colors.GRAY}{updated_line}{Colors.RESET}")
         if board.tags:
             print(f"{Colors.GRAY}Tags: {', '.join(board.tags)}{Colors.RESET}")
 
@@ -1380,17 +1378,9 @@ def search_boards(
     # Show skipped boards summary if any were filtered out
     if skipped_count > 0:
         print(f"\n{Colors.YELLOW}ℹ️  {skipped_count} downloadable board(s) were skipped due to filter criteria.{Colors.RESET}")
-        breakdown_parts = []
-        if skipped_buckets["views"]:
-            breakdown_parts.append(f"views: {skipped_buckets['views']}")
-        if skipped_buckets["sounds"]:
-            breakdown_parts.append(f"sounds: {skipped_buckets['sounds']}")
-        if skipped_buckets["updated_unknown"]:
-            breakdown_parts.append(f"updated unknown: {skipped_buckets['updated_unknown']}")
-        if skipped_buckets["updated_too_old"]:
-            breakdown_parts.append(f"updated too old: {skipped_buckets['updated_too_old']}")
-        if breakdown_parts:
-            print(f"   Skipped breakdown (may overlap): {', '.join(breakdown_parts)}")
+        breakdown = _format_skipped_breakdown(skipped_buckets)
+        if breakdown:
+            print(f"   Skipped breakdown (may overlap): {breakdown}")
         if min_views > 0 or min_sounds > 0:
             print(f"   Adjust --min-views or --min-sounds to include them in results.")
 

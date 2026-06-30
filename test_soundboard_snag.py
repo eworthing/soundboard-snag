@@ -284,5 +284,38 @@ class EvaluateFiltersTests(unittest.TestCase):
         self.assertEqual(failures, [])
 
 
+class FormatUpdatedLineTests(unittest.TestCase):
+    def test_known_date_with_source_and_stats(self):
+        dt = datetime(2025, 1, 2, tzinfo=timezone.utc)
+        self.assertEqual(
+            sb._format_updated_line(dt, "track", (3, 5)),
+            "Updated: 2025-01-02 (approx via track; track headers: 3/5)",
+        )
+
+    def test_known_date_no_source_no_stats(self):
+        dt = datetime(2025, 1, 2, tzinfo=timezone.utc)
+        self.assertEqual(sb._format_updated_line(dt, None, None), "Updated: 2025-01-02 (approx)")
+
+    def test_unknown_date(self):
+        self.assertEqual(sb._format_updated_line(None, None, None), "Updated: unknown (approx)")
+        self.assertEqual(
+            sb._format_updated_line(None, None, (0, 4)),
+            "Updated: unknown (approx; track headers: 0/4)",
+        )
+
+
+class FormatSkippedBreakdownTests(unittest.TestCase):
+    def test_empty_when_all_zero(self):
+        buckets = {"views": 0, "sounds": 0, "updated_unknown": 0, "updated_too_old": 0}
+        self.assertEqual(sb._format_skipped_breakdown(buckets), "")
+
+    def test_fixed_order_and_nonzero_only(self):
+        buckets = {"views": 2, "sounds": 0, "updated_unknown": 1, "updated_too_old": 3}
+        self.assertEqual(
+            sb._format_skipped_breakdown(buckets),
+            "views: 2, updated unknown: 1, updated too old: 3",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
