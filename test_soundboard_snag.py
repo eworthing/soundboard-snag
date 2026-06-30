@@ -17,6 +17,7 @@ the deterministic helpers so future refactors get a regression signal. Run with:
 
 import importlib.util
 import os
+import re
 import unittest
 from datetime import datetime, timezone
 
@@ -315,6 +316,63 @@ class FormatSkippedBreakdownTests(unittest.TestCase):
             sb._format_skipped_breakdown(buckets),
             "views: 2, updated unknown: 1, updated too old: 3",
         )
+
+
+def _make_board(**overrides):
+    base = dict(
+        board_name="starwars", has_downloads=True, sounds_info=[("1", "Pew"), ("2", "Boom")],
+        total_count=12, board_desc="", category="", views="", tags=[],
+        views_int=0, approx_updated=None, approx_source=None,
+    )
+    base.update(overrides)
+    return sb.BoardResult(**base)
+
+
+class RenderBoardLinesTests(unittest.TestCase):
+    def _plain(self, lines):
+        # strip ANSI so assertions check semantic content, not color codes
+        return [re.sub(r"\033\[[0-9;]*m", "", ln) for ln in lines]
+
+    def test_downloadable_header_and_url(self):
+        lines = self._plain(sb._render_board_lines(_make_board(), None, include_dates=False))
+        self.assertIn("Board: starwars - ✓ DOWNLOADABLE (12 sounds total)", lines[0])
+        self.assertEqual(lines[1], "URL: https://www.soundboard.com/sb/starwars")
+
+    def test_play_only_status(self):
+        lines = self._plain(sb._render_board_lines(_make_board(has_downloads=False), None, include_dates=False))
+        self.assertIn("✗ PLAY-ONLY", lines[0])
+
+    def test_optional_fields_present_only_when_set(self):
+        plain = self._plain(sb._render_board_lines(_make_board(), None, include_dates=False))
+        joined = "\n".join(plain)
+        self.assertNotIn("Description:", joined)
+        self.assertNotIn("Category:", joined)
+        self.assertNotIn("Tags:", joined)
+        plain2 = self._plain(sb._render_board_lines(
+            _make_board(board_desc="d", category="Movies", views="1,234", tags=["a", "b"]),
+            None, include_dates=False))
+        j2 = "\n".join(plain2)
+        self.assertIn("Description: d", j2)
+        self.assertIn("Category: Movies", j2)
+        self.assertIn("Views: 1,234", j2)
+        self.assertIn("Tags: a, b", j2)
+
+    def test_dates_line_only_when_include_dates(self):
+        no_dates = "\n".join(self._plain(sb._render_board_lines(_make_board(), None, include_dates=False)))
+        self.assertNotIn("Updated:", no_dates)
+        with_dates = "\n".join(self._plain(sb._render_board_lines(_make_board(), (3, 5), include_dates=True)))
+        self.assertIn("Updated: unknown (approx; track headers: 3/5)", with_dates)
+
+    def test_sample_files_listed(self):
+        plain = self._plain(sb._render_board_lines(_make_board(), None, include_dates=False))
+        joined = "\n".join(plain)
+        self.assertIn("Sample files (showing 2 of 12):", joined)
+        self.assertIn(" 1. Pew", joined)
+        self.assertIn(" 2. Boom", joined)
+
+    def test_no_sample_section_when_empty(self):
+        joined = "\n".join(self._plain(sb._render_board_lines(_make_board(sounds_info=[]), None, include_dates=False)))
+        self.assertNotIn("Sample files", joined)
 
 
 if __name__ == "__main__":

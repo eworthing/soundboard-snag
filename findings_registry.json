@@ -1,6 +1,6 @@
 {
   "registry_schema_version": 3,
-  "next_serial": 7,
+  "next_serial": 9,
   "entries": [
     {
       "stable_id": "F-001",
@@ -276,7 +276,7 @@
       "severity": "Serious deduction",
       "first_seen_loop": 4,
       "first_seen_sha": "0d964bb3bcb3ff2f9b31e3281e7c471fc99711bc",
-      "last_seen_loop": 6,
+      "last_seen_loop": 7,
       "occurrences": [
         {
           "loop": 4,
@@ -310,6 +310,73 @@
             "evidence_paths_hash": "sha256:851dbaad079050426eaa849db9d9867839ed2fd478bb8fa01d7c1a362eba3d49"
           },
           "attempted_remedy_hash": "sha256:370b35de02bed4d39236be95d7ff86854e1d95ff6cbecf00403531f6260a4e3d"
+        },
+        {
+          "loop": 7,
+          "loop_local_id": "F1",
+          "status": "resolved",
+          "sha": "41ec0c76f882caddef9f65d78dd259f48aca02fc",
+          "fingerprint": {
+            "claim_consequence_hash": "sha256:14b26fc209316d7c7258e88cd16547b52f0a0204a32182df067588e9f8b4e363",
+            "evidence_paths_hash": "sha256:851dbaad079050426eaa849db9d9867839ed2fd478bb8fa01d7c1a362eba3d49"
+          },
+          "attempted_remedy_hash": "sha256:370b35de02bed4d39236be95d7ff86854e1d95ff6cbecf00403531f6260a4e3d"
+        }
+      ]
+    },
+    {
+      "stable_id": "F-008",
+      "title": "Network orchestration and the download pipeline are untestable (no injectable fetch seam)",
+      "category_hint": "testability-seam",
+      "primary_file": "soundboard-snag.py",
+      "primary_evidence_lines": [
+        789,
+        1404
+      ],
+      "test_failed": "Two-adapter rule",
+      "severity": "Serious deduction",
+      "first_seen_loop": 7,
+      "first_seen_sha": "41ec0c76f882caddef9f65d78dd259f48aca02fc",
+      "last_seen_loop": 7,
+      "occurrences": [
+        {
+          "loop": 7,
+          "loop_local_id": "F2",
+          "status": "open",
+          "sha": "41ec0c76f882caddef9f65d78dd259f48aca02fc",
+          "fingerprint": {
+            "claim_consequence_hash": "sha256:d0cc10b23faec05704e5c57a5d8c915a63ff1e77a1f73c21ccd48f63157b5dfb",
+            "evidence_paths_hash": "sha256:27f08e1ae5733f09441f53de99e3d7e0330226aeae56217c461a8f07766d2562"
+          },
+          "attempted_remedy_hash": "sha256:6d142ca5c33c17b430e505b9f1161e60f6f5a868bdd47ca570152ca8e96033d3"
+        }
+      ]
+    },
+    {
+      "stable_id": "F-007",
+      "title": "main re-filters search results that are already downloadable-only",
+      "category_hint": "redundant-code",
+      "primary_file": "soundboard-snag.py",
+      "primary_evidence_lines": [
+        1593,
+        1593
+      ],
+      "test_failed": "Deletion test",
+      "severity": "Cosmetic for contest",
+      "first_seen_loop": 7,
+      "first_seen_sha": "41ec0c76f882caddef9f65d78dd259f48aca02fc",
+      "last_seen_loop": 7,
+      "occurrences": [
+        {
+          "loop": 7,
+          "loop_local_id": "F3",
+          "status": "open",
+          "sha": "41ec0c76f882caddef9f65d78dd259f48aca02fc",
+          "fingerprint": {
+            "claim_consequence_hash": "sha256:d98ee788f03d086a0970f96604dc84772e7395d5cbe630d97b4184a4794db12f",
+            "evidence_paths_hash": "sha256:5a07e0d969f4b2acc3dff7eb240136f3c85aab0f1bab74fbcc0795c32f04b566"
+          },
+          "attempted_remedy_hash": "sha256:1d18fad7eb4c3e0ab51f44bb08d3d110f779d0a87ff37a086a9151b6a105505a"
         }
       ]
     }

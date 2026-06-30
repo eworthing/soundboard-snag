@@ -236,6 +236,38 @@ def _format_skipped_breakdown(skipped_buckets):
     return ", ".join(parts)
 
 
+def _render_board_lines(board, stats, include_dates):
+    """Build the detail lines for one board in the results listing (pure).
+
+    ``board`` is a BoardResult; ``stats`` is None or an ``(ok, total)`` pair of
+    track-header counts. Returns a list of fully-formatted (colored) strings;
+    the caller prints them. No network, no I/O.
+    """
+    if board.has_downloads:
+        status = f"{Colors.GREEN}✓ DOWNLOADABLE{Colors.RESET}"
+    else:
+        status = f"{Colors.RED}✗ PLAY-ONLY{Colors.RESET}"
+    lines = [
+        f"{Colors.BOLD}Board:{Colors.RESET} {Colors.CYAN}{board.board_name}{Colors.RESET} - {status} {Colors.GRAY}({board.total_count} sounds total){Colors.RESET}",
+        f"{Colors.GRAY}URL: {BASE_URL}/sb/{_quote_path_segment(board.board_name)}{Colors.RESET}",
+    ]
+    if board.board_desc:
+        lines.append(f"{Colors.GRAY}Description: {board.board_desc}{Colors.RESET}")
+    if board.category:
+        lines.append(f"{Colors.GRAY}Category: {board.category}{Colors.RESET}")
+    if board.views:
+        lines.append(f"{Colors.GRAY}Views: {board.views}{Colors.RESET}")
+    if include_dates:
+        lines.append(f"{Colors.GRAY}{_format_updated_line(board.approx_updated, board.approx_source, stats)}{Colors.RESET}")
+    if board.tags:
+        lines.append(f"{Colors.GRAY}Tags: {', '.join(board.tags)}{Colors.RESET}")
+    if board.sounds_info:
+        lines.append(f"\n{Colors.BOLD}Sample files (showing {len(board.sounds_info)} of {board.total_count}):{Colors.RESET}")
+        for idx, (sound_id, title) in enumerate(board.sounds_info, 1):
+            lines.append(f"  {Colors.YELLOW}{idx:2}.{Colors.RESET} {title}")
+    return lines
+
+
 def _quote_path_segment(value):
     """Quote a URL path segment without double-encoding existing percent escapes."""
     # Keep '%' safe so values like "PRINS%20JULIUS" aren't double-encoded.
@@ -1348,29 +1380,8 @@ def search_boards(
     print(f"{'='*80}{Colors.RESET}\n")
 
     for board in results:
-        if board.has_downloads:
-            status = f"{Colors.GREEN}✓ DOWNLOADABLE{Colors.RESET}"
-        else:
-            status = f"{Colors.RED}✗ PLAY-ONLY{Colors.RESET}"
-        print(f"{Colors.BOLD}Board:{Colors.RESET} {Colors.CYAN}{board.board_name}{Colors.RESET} - {status} {Colors.GRAY}({board.total_count} sounds total){Colors.RESET}")
-        print(f"{Colors.GRAY}URL: {BASE_URL}/sb/{_quote_path_segment(board.board_name)}{Colors.RESET}")
-
-        if board.board_desc:
-            print(f"{Colors.GRAY}Description: {board.board_desc}{Colors.RESET}")
-        if board.category:
-            print(f"{Colors.GRAY}Category: {board.category}{Colors.RESET}")
-        if board.views:
-            print(f"{Colors.GRAY}Views: {board.views}{Colors.RESET}")
-        if include_dates:
-            updated_line = _format_updated_line(board.approx_updated, board.approx_source, board_date_stats.get(board.board_name))
-            print(f"{Colors.GRAY}{updated_line}{Colors.RESET}")
-        if board.tags:
-            print(f"{Colors.GRAY}Tags: {', '.join(board.tags)}{Colors.RESET}")
-
-        if board.sounds_info:
-            print(f"\n{Colors.BOLD}Sample files (showing {len(board.sounds_info)} of {board.total_count}):{Colors.RESET}")
-            for idx, (sound_id, title) in enumerate(board.sounds_info, 1):
-                print(f"  {Colors.YELLOW}{idx:2}.{Colors.RESET} {title}")
+        for line in _render_board_lines(board, board_date_stats.get(board.board_name), include_dates):
+            print(line)
         print("\n")  # Two newlines after each board
 
     print(f"{Colors.BOLD}{'='*80}{Colors.RESET}")

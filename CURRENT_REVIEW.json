@@ -1,6 +1,6 @@
 {
   "schema_version": 4,
-  "loop": 6,
+  "loop": 7,
   "loop_cap": 10,
   "state": "CONTINUE",
   "halt_subtype": null,
@@ -29,123 +29,143 @@
   "discovery": null,
 
   "verdict": "Good app, but not top-tier yet",
-  "verdict_explanation": "The filter extraction (now visible) lifts architecture, simplicity, test strategy and credibility. This loop resolves the duplicated render blocks (F-005) by extracting two pure, tested format helpers, which is also the render-dedup slice of F-006. What remains of F-006 is the non-duplicated per-board detail render still inlined in search_boards.",
+  "verdict_explanation": "All the pure logic in search_boards is now extracted and tested: parse, filter, formatting, and (this loop) the per-board render. search_boards is down to its orchestration role. The remaining ceiling is that the orchestration itself (pagination, cross-page dedup, early-stop, near-miss suggestions) and the SoundboardSnag download pipeline are network-coupled and untested because there is no injectable fetch seam.",
 
   "scorecard": {
-    "architecture_quality":      {"score": 7.0, "delta": "UP", "proof": "filter decision now a pure tested Module (_evaluate_filters, commit 18fa3f8); search_boards owns transport + orchestration + the remaining inline detail render. Residual: per-board detail render still inlined (soundboard-snag.py:1350-1390)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
+    "architecture_quality":      {"score": 7.0, "delta": "SAME", "proof": "pure parse/filter/format extracted; the per-board render extraction is this loop's fix (scored next loop). Residual: no fetch seam, so the orchestration loop and SoundboardSnag pipeline are untestable", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
     "state_management":          {"score": 7.5, "delta": "SAME", "proof": "single-threaded; one writer per concern; immutable instance attrs", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
     "domain_modeling":           {"score": 6.5, "delta": "SAME", "proof": "BoardResult + ParsedBoard; sounds_info deliberately a plain (id,title) 2-tuple (guardrail: don't force types)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
-    "data_flow":                 {"score": 7.0, "delta": "SAME", "proof": "named-field contracts; residual: main re-filters results (soundboard-snag.py:1582) although search_boards already returns only has_downloads boards (a redundant filter)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
+    "data_flow":                 {"score": 7.0, "delta": "SAME", "proof": "named-field contracts; residual: main re-filters results (soundboard-snag.py:1593) although search_boards already returns only downloadable boards (1299) — a redundant filter (F-007)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
     "framework_idioms":          {"score": 7.0, "delta": "SAME", "proof": "idiomatic stdlib; defensive sanitization; HTTPS; no secrets", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
     "concurrency":               {"score": 9.5, "delta": "SAME", "proof": "no async/threading — synchronous CLI, no shared-mutable hazard", "residual_blocking_10": "time.sleep pacing is intentional server etiquette, not a determinism hazard", "residual_disposition": "accepted", "residual_rationale_or_backlog_ref": "Tool is deliberately synchronous; no concurrency model to make safer. Permanent design carve-out.", "unverifiable_due_to_build_failure": false},
-    "simplicity":                {"score": 7.0, "delta": "UP", "proof": "filter extraction shrank search_boards to ~678 (commit 18fa3f8). Residual at loop start: two duplicated render blocks (date-display + skipped-breakdown), addressed this loop", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
-    "test_strategy":             {"score": 7.5, "delta": "UP", "proof": "EvaluateFiltersTests added (commit 18fa3f8) — filter decision fully branch-tested; 34 tests. Residual: rendering untested at loop start (addressed this loop)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
-    "credibility":               {"score": 7.5, "delta": "UP", "proof": "parse + filter both now test-backed (commit 18fa3f8); two named domain records; consistent behavior-preserving extraction history", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false}
+    "simplicity":                {"score": 7.5, "delta": "UP", "proof": "render duplication removed via two pure helpers (commit 41ec0c7); search_boards shrank to ~636. Residual at loop start: the per-board detail render still inlined (addressed this loop)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
+    "test_strategy":             {"score": 8.0, "delta": "UP", "proof": "FormatUpdatedLineTests + FormatSkippedBreakdownTests added (commit 41ec0c7); 39 tests cover parse, filter and formatting at real Interfaces. Residual: network orchestration + download pipeline untested (F-008)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
+    "credibility":               {"score": 7.5, "delta": "SAME", "proof": "parse, filter and formatting all test-backed; consistent behavior-preserving extraction history; code remains honest", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false}
   },
 
   "authority_map": [],
 
   "strengths": [
-    "Four behavior-preserving, independently-reviewed extractions (BoardResult, _parse_board_html, _evaluate_filters, render helpers) — a sustained honest refactor cadence",
-    "Pure helpers, parse, and filter decision are all fixture-tested at their real Interfaces",
+    "Five behavior-preserving, independently-reviewed extractions (BoardResult, _parse_board_html, _evaluate_filters, two format helpers, render helper) — every slice tested at its Interface",
+    "search_boards is now an orchestration function; all of its pure logic is reachable and tested without the network",
     "Synchronous design + defensive sanitization remain real strengths"
   ],
 
   "findings": [
     {
       "loop_local_id": "F1",
-      "stable_id": "F-005",
-      "title": "Date-display and skipped-breakdown rendering duplicated near-verbatim",
-      "why_it_matters": "Two copies of the same presentation logic must be kept in sync by hand; they will drift, and the duplication is untestable while inlined.",
-      "what_is_wrong": "The approx-updated date block and the skipped-buckets breakdown block each appeared twice with near-identical bodies (the only difference a 2-space indent on the date block).",
-      "evidence": ["soundboard-snag.py:1176-1191 vs 1353-1368 (date-display block, pre-fix)", "soundboard-snag.py:1271-1281 vs 1383-1393 (skipped-breakdown block, pre-fix)"],
-      "test_failed": "Deletion test",
+      "stable_id": "F-006",
+      "title": "search_boards still inlines the per-board detail render",
+      "why_it_matters": "The detail render is sequential formatting that should be a tested helper, keeping search_boards larger than its orchestration role and the output untested.",
+      "what_is_wrong": "The final results listing inlined the per-board detail render (name/status, URL, description, category, views, dates, tags, sample files).",
+      "evidence": ["soundboard-snag.py:1350-1374 (inline per-board detail render, pre-fix)"],
+      "test_failed": "Shallow module",
       "dependency_category": "in-process",
-      "leverage_impact": "A formatting change had to be made in two places.",
-      "locality_impact": "Drift between the two copies would produce inconsistent output for the same data.",
+      "leverage_impact": "Maintainers read the detail render inside the orchestration function; output is untested.",
+      "locality_impact": "A formatting change is localized but was untested.",
       "metric_signal": "none",
-      "why_weakens_submission": "Duplicate presentation logic is a simplification deduction and kept the formatting untestable.",
+      "why_weakens_submission": "The last inlined render kept architecture and simplicity a notch below top-tier and the output untested.",
       "severity": "Noticeable weakness",
       "adr_conflicts": [],
       "adr_reopen_justification": null,
-      "minimal_correction_path": "Extract _format_updated_line(approx_updated, approx_source, stats) -> str and _format_skipped_breakdown(skipped_buckets) -> str (pure, no color); call from both sites, wrapping with the site-specific color/indent. Fixture-test both.",
-      "blast_radius": {"change": ["soundboard-snag.py", "test_soundboard_snag.py"], "avoid": ["search/transport loop", "filter logic"]}
+      "minimal_correction_path": "Extract a pure _render_board_lines(board, stats, include_dates) -> list[str]; the loop prints the lines; fixture-test the lines' semantic content. No renderer class.",
+      "blast_radius": {"change": ["soundboard-snag.py", "test_soundboard_snag.py"], "avoid": ["transport/urlopen", "progress/diagnostic prints", "main argparse"]}
     },
     {
       "loop_local_id": "F2",
-      "stable_id": "F-006",
-      "title": "search_boards still inlines the per-board detail render (~636 lines)",
-      "why_it_matters": "The remaining render section is sequential formatting that could be a tested helper, keeping search_boards larger than its orchestration role requires.",
-      "what_is_wrong": "After the parse, filter and render-dedup extractions, search_boards still inlines the per-board/final detail render (board name, URL, description, category, views, tags, sample files).",
-      "evidence": ["soundboard-snag.py:757-1393 (function span)", "soundboard-snag.py:1350-1390 (inline per-board detail render, remaining)"],
-      "test_failed": "Shallow module",
-      "dependency_category": "in-process",
-      "leverage_impact": "Maintainers still read the detail render inside the orchestration function.",
-      "locality_impact": "Low now — the render is non-duplicated sequential output; a change is localized but untested.",
+      "stable_id": "F-008",
+      "title": "Network orchestration and the download pipeline are untestable (no injectable fetch seam)",
+      "why_it_matters": "The genuinely complex untested logic — pagination, cross-page dedup, the early-stop on enough-downloadable, near-miss suggestions, and SoundboardSnag.snag's consecutive-failure abort — can only be exercised against the live site, so it has no regression guard.",
+      "what_is_wrong": "search_boards and SoundboardSnag call urlopen directly; there is no seam to inject a fake page-fetcher, so the orchestration and download loops cannot be unit-tested.",
+      "evidence": ["soundboard-snag.py:789-1404 (search_boards orchestration: pagination, dedup, early-stop, near-miss)", "soundboard-snag.py:503-530 (SoundboardSnag._fetch_page)", "soundboard-snag.py:682 (SoundboardSnag.snag consecutive-failure abort)"],
+      "test_failed": "Two-adapter rule",
+      "dependency_category": "remote-owned",
+      "leverage_impact": "Callers/maintainers cannot verify the orchestration without the network.",
+      "locality_impact": "A regression in pagination or the early-stop would only surface against the live site.",
       "metric_signal": "none",
-      "why_weakens_submission": "The last inlined render keeps architecture and simplicity a notch below top-tier; it is the final structural slice.",
-      "severity": "Noticeable weakness",
+      "why_weakens_submission": "The remaining test-strategy and architecture ceiling: the most behavior-rich code is untested. A fetch seam (real urlopen adapter + in-memory fake) satisfies the Unified Seam Policy two-adapter rule and unlocks deterministic tests.",
+      "severity": "Serious deduction",
       "adr_conflicts": [],
       "adr_reopen_justification": null,
-      "minimal_correction_path": "Next loop: extract a pure _render_board_lines(board, stats, include_dates) -> list[str] for the final results render, fixture-tested; the search loop just prints the lines. Stop there — do not extract the progress/diagnostic prints (they are I/O-status, not data formatting). No renderer class.",
-      "blast_radius": {"change": ["soundboard-snag.py", "test_soundboard_snag.py"], "avoid": ["transport/urlopen", "progress lines", "main argparse"]}
+      "minimal_correction_path": "Introduce a small fetch seam: a module-level _http_get(url) -> str default, threaded as an optional `fetch` parameter into search_boards (and a `fetcher` into SoundboardSnag). Production passes the default; tests pass an in-memory fake returning canned HTML keyed by URL. Then test pagination/dedup/early-stop/near-miss and the consecutive-failure abort. Two real adapters (urlopen + fake) justify the seam.",
+      "blast_radius": {"change": ["soundboard-snag.py", "test_soundboard_snag.py"], "avoid": ["the pure helpers already extracted", "filename sanitization"]}
+    },
+    {
+      "loop_local_id": "F3",
+      "stable_id": "F-007",
+      "title": "main re-filters search results that are already downloadable-only",
+      "why_it_matters": "A redundant filter implies search_boards might return play-only boards, which it does not; the duplication is mildly misleading.",
+      "what_is_wrong": "main computes downloadable_boards = [r for r in results if r.has_downloads], but search_boards already returns only has_downloads boards.",
+      "evidence": ["soundboard-snag.py:1593 (redundant re-filter in main)", "soundboard-snag.py:1299 (authoritative filter in search_boards)"],
+      "test_failed": "Deletion test",
+      "dependency_category": "in-process",
+      "leverage_impact": "None — the filter is a no-op.",
+      "locality_impact": "Minor: a reader may wonder whether search_boards can return play-only boards.",
+      "metric_signal": "none",
+      "why_weakens_submission": "Redundant defensive code is a small data-flow/simplicity deduction.",
+      "severity": "Cosmetic for contest",
+      "adr_conflicts": [],
+      "adr_reopen_justification": null,
+      "minimal_correction_path": "Replace the re-filter with downloadable_boards = results (or iterate results directly), with a comment that search_boards already guarantees has_downloads.",
+      "blast_radius": {"change": ["soundboard-snag.py"], "avoid": ["search_boards filter logic"]}
     }
   ],
 
   "simplification_check": {
-    "structurally_necessary": "Extracting the two format helpers passes the Deletion test (the duplicated blocks vanish into one definition each) and makes formatting fixture-testable. Pure functions returning strings; callers keep color/indent.",
+    "structurally_necessary": "Extracting _render_board_lines passes the Shallow-module test: a small Interface (board + stats + flag in, list[str] out) with the detail-render behavior behind it, now reached directly by tests. The render is pure (depends only on the BoardResult and module constants).",
     "new_seam_justified": false,
     "new_seam_adapters": [],
-    "helpful_simplification": "search_boards shrinks; output formatting is now testable and single-sourced.",
-    "should_not_be_done": "Do not move ANSI color into the helpers (callers own presentation context/indent); do not extract progress/diagnostic prints; no renderer class hierarchy.",
-    "tests_after_fix": "test_soundboard_snag.py gains FormatUpdatedLineTests (known/with-source/with-stats, unknown, unknown+stats) and FormatSkippedBreakdownTests (empty, fixed-order non-zero-only) at the new helper Interfaces."
+    "helpful_simplification": "search_boards drops to ~615 lines and the results listing is now testable.",
+    "should_not_be_done": "Do not move ANSI out of the render helper (the colors are intrinsic to each line); do not extract the progress/diagnostic prints; no renderer class. The F-008 fetch seam is a separate, larger change for a later loop.",
+    "tests_after_fix": "test_soundboard_snag.py gains RenderBoardLinesTests (header/status, play-only, optional fields, dates-only-when-flag, sample files, empty samples) asserting semantic content with ANSI stripped."
   },
 
   "backlog": [
-    {"priority": 1, "title": "Extract pure render/format helpers for the duplicated date + skipped-breakdown blocks (F-005)", "kind": "simplification", "rank": "needed for winning", "why_it_matters": "Removes drift-prone duplication and makes formatting testable; render-dedup slice of F-006.", "score_impact": "simplicity +, test_strategy +"},
-    {"priority": 2, "title": "Extract the per-board detail render into a pure tested helper (F-006 residual)", "kind": "structural", "rank": "helpful", "why_it_matters": "Final render slice; shrinks search_boards to an orchestration core.", "score_impact": "architecture +, simplicity +, test_strategy +"}
+    {"priority": 1, "title": "Extract the per-board detail render into a pure tested _render_board_lines (F-006)", "kind": "structural", "rank": "needed for winning", "why_it_matters": "Final render slice; makes the listing testable and shrinks search_boards to orchestration.", "score_impact": "architecture +, simplicity +, test_strategy +"},
+    {"priority": 2, "title": "Introduce an injectable fetch seam to test the orchestration and download pipeline (F-008)", "kind": "structural", "rank": "needed for winning", "why_it_matters": "The remaining test-strategy/architecture ceiling; unlocks deterministic tests of pagination, dedup, early-stop, near-miss, and the failure-abort.", "score_impact": "test_strategy +, architecture +, data_flow +"},
+    {"priority": 3, "title": "Remove the redundant downloadable re-filter in main (F-007)", "kind": "simplification", "rank": "helpful", "why_it_matters": "Subtractive; clarifies that search_boards already guarantees downloadable-only.", "score_impact": "data_flow +, simplicity +"}
   ],
   "unresolved_reason": null,
 
   "deepening_candidates": [
     {
-      "candidate_module": "Per-board detail rendering inside search_boards",
-      "source_friction_proven": "Finding F-006 — the detail render is sequential formatting inlined in the orchestration function",
-      "why_shallow_or_misplaced": "There is no render Interface for the detail block; it is inlined.",
-      "behavior_to_move_behind_interface": "BoardResult-to-lines formatting for the final results listing (name, URL, desc, category, views, dates via _format_updated_line, tags, sample files).",
-      "dependency_category": "in-process",
-      "test_surface_after_change": "test_soundboard_snag.py asserts the rendered lines for a representative BoardResult without network.",
-      "smallest_first_step": "Extract _render_board_lines(board, stats, include_dates) -> list[str]; print the lines in the loop.",
-      "what_not_to_do": "Do not extract progress/diagnostic prints; no renderer class hierarchy or templating layer."
+      "candidate_module": "Page-fetch seam for search_boards and SoundboardSnag",
+      "source_friction_proven": "Finding F-008 — the orchestration and download loops cannot be tested without the network",
+      "why_shallow_or_misplaced": "urlopen is called inline at multiple sites; there is no injection point for a deterministic fake.",
+      "behavior_to_move_behind_interface": "HTTP GET of a page/track URL returning decoded text (or bytes for downloads), behind a default _http_get and an injectable fetch parameter.",
+      "dependency_category": "remote-owned",
+      "test_surface_after_change": "test_soundboard_snag.py drives search_boards with an in-memory fetcher returning canned HTML; asserts pagination, dedup, early-stop, near-miss, and the consecutive-failure abort.",
+      "smallest_first_step": "Add _http_get(url) -> str and an optional fetch=_http_get parameter on search_boards; route the search-page and board-page reads through it.",
+      "what_not_to_do": "Do not build an HTTP client class hierarchy or a registry of adapters; a single injected function is the honest seam."
     }
   ],
 
   "builder_notes": [
     {
-      "pattern": "Extract formatting as string-returning helpers, keep presentation context at the call site",
-      "how_to_recognize": "Duplicated print blocks differ only in color or indent.",
-      "smallest_coding_rule": "Return the semantic text from a pure helper; let each caller add its own color/indent wrapper.",
-      "stack_example": "Python: _format_updated_line returns 'Updated: ...'; one caller prints it with a 2-space indent, the other without."
+      "pattern": "Render functions return lines; the caller prints",
+      "how_to_recognize": "A block of print() calls builds one logical unit of output inside a bigger loop.",
+      "smallest_coding_rule": "Return a list[str] of formatted lines from a pure function; the loop prints them. Test the lines, not stdout.",
+      "stack_example": "Python: _render_board_lines(board, stats, include_dates) -> list[str]; tests strip ANSI and assert semantic content."
     },
     {
-      "pattern": "A fixed-order join helper beats repeated append blocks",
-      "how_to_recognize": "Several `if count: parts.append(...)` lines repeated in two places.",
-      "smallest_coding_rule": "Drive the parts from a (key, label) table in a pure function returning the joined string ('' when empty).",
-      "stack_example": "Python: _format_skipped_breakdown iterates a labels table and joins non-zero buckets."
+      "pattern": "Color is intrinsic to a render helper; do not factor it out",
+      "how_to_recognize": "Each line interleaves several colored segments, unlike the earlier single-field format helpers.",
+      "smallest_coding_rule": "Let the render helper own the color; assert on ANSI-stripped output in tests instead of forcing plain-text returns.",
+      "stack_example": "Python: the board line mixes BOLD/CYAN/GREEN/GRAY — keep them in the helper."
     },
     {
-      "pattern": "Know when a finding is nearly done and name the small residual honestly",
-      "how_to_recognize": "After several slices, the remaining work is low-severity (non-duplicated sequential output).",
-      "smallest_coding_rule": "Downgrade the residual's severity to match reality and consider whether the last slice is worth a loop or is an accepted residual.",
-      "stack_example": "Python: F-006's remaining detail render is Noticeable, not Serious, once parse/filter/dedup are extracted."
+      "pattern": "Name the seam that unlocks the last untested surface",
+      "how_to_recognize": "All pure logic is tested, but the network orchestration still has no regression guard.",
+      "smallest_coding_rule": "Introduce a single injectable fetch function (default real, fake in tests) — two adapters justify the seam under the two-adapter rule.",
+      "stack_example": "Python: search_boards(fetch=_http_get) lets tests pass an in-memory fetcher."
     }
   ],
 
-  "narrative": "Place — a good app, nearly through its structural backlog. This loop resolves the duplicated render blocks with two pure, tested format helpers, lifting simplicity and test strategy and single-sourcing the formatting. F-005 is resolved; F-006 is down to one low-severity slice (the non-duplicated per-board detail render). Ownership and concurrency stay trustworthy. The refactor has stayed subtractive and test-backed throughout, resisting the renderer-class temptation the rubric warns against.",
+  "narrative": "Place — a good app, now with all of search_boards' pure logic extracted and tested. This loop extracts the per-board render into a fixture-tested helper, finishing the decomposition that began with BoardResult. The honest remaining ceiling is named precisely (F-008): the network orchestration and download pipeline have no injectable fetch seam, so the most behavior-rich code is untested. A single injected fetch function (real + fake) is the justified next move. The redundant re-filter in main (F-007) is a small subtractive cleanup. The refactor has stayed disciplined and test-backed throughout.",
 
   "loop_result": {
-    "what_changed": "Extracted two pure formatting helpers from search_boards: _format_updated_line(approx_updated, approx_source, stats) -> str and _format_skipped_breakdown(skipped_buckets) -> str. Folded the four duplicated render sites (two date-display, two skipped-breakdown) into single calls, with each caller keeping its own color/indent. Added FormatUpdatedLineTests (3) and FormatSkippedBreakdownTests (2).",
-    "evidence_change_is_honest": "python3 -m py_compile passes; python3 -m unittest test_soundboard_snag runs 39 tests, all OK (34 prior + 5 new); --help exits 0; grep confirms breakdown_parts no longer appears anywhere and the date-display literals exist only inside the single _format_updated_line definition; the helpers reproduce the exact strings (including the 'approx', ' via {source}', and '; track headers: ok/total' fragments) and the date block keeps its 2-space indent at the inline site; search_boards shrank ~678->636 lines.",
+    "what_changed": "Extracted the per-board detail render out of search_boards into a pure _render_board_lines(board, stats, include_dates) -> list[str]; the results loop now prints the returned lines. Added RenderBoardLinesTests (6 tests) asserting header/status, play-only, optional-field presence, dates-only-when-flag, sample-file listing, and empty-samples, with ANSI stripped.",
+    "evidence_change_is_honest": "python3 -m py_compile passes; python3 -m unittest test_soundboard_snag runs 45 tests, all OK (39 prior + 6 new); --help exits 0; a direct render comparison shows the produced lines are byte-identical to the original prints (colors, the '\\n'-prefixed Sample-files header, and the {idx:2} numbering preserved); search_boards shrank ~636->615 lines.",
     "risk_boundary_evidence": null,
     "targeted_finding_status": "resolved",
     "unintended_regression": null,
@@ -155,13 +175,13 @@
 
   "implementation_review": {
     "verdict": "approved",
-    "reason": "All three checks pass: helpers exist at module level, all four duplicated blocks replaced, behavior is byte-identical, callers keep their own color and indent, tests assert real strings, and no regression introduced.",
+    "reason": "The per-board render is fully extracted into a pure module-level _render_board_lines returning list[str]; the loop body is the required one-liner; all format strings, field order, and ANSI codes are byte-identical to the originals; six semantic tests cover the new interface with ANSI stripped; no regression introduced.",
     "checks": {"reality": "passed", "honesty": "passed", "regression": "passed"},
     "regressions": [],
     "conditions": [],
     "rounds": 1,
     "retry_count": 1,
     "retry_cause": null,
-    "retry_attempts": [{"attempt": 1, "outcome": "ok", "error": null, "duration_ms": 99614}]
+    "retry_attempts": [{"attempt": 1, "outcome": "ok", "error": null, "duration_ms": 117866}]
   }
 }
