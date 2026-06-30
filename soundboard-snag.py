@@ -316,12 +316,6 @@ def _fetch_last_modified_detailed(url):
         return None, f"RANGE error: {type(e).__name__}: {e}"
 
 
-def _fetch_last_modified(url):
-    """Fetch Last-Modified header for a URL (best-effort)."""
-    dt, _ = _fetch_last_modified_detailed(url)
-    return dt
-
-
 def _format_date(dt):
     """Format a datetime for display."""
     return dt.strftime('%Y-%m-%d')

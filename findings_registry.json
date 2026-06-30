@@ -1,6 +1,6 @@
 {
   "registry_schema_version": 3,
-  "next_serial": 6,
+  "next_serial": 7,
   "entries": [
     {
       "stable_id": "F-001",
@@ -132,7 +132,7 @@
       "severity": "Cosmetic for contest",
       "first_seen_loop": 1,
       "first_seen_sha": "765b17b82f110f53ab23cc09718cfb630acf3a52",
-      "last_seen_loop": 3,
+      "last_seen_loop": 4,
       "occurrences": [
         {
           "loop": 1,
@@ -166,6 +166,17 @@
             "evidence_paths_hash": "sha256:3d1f9a3d7b9de9bfba6752b7e56f8e84b0149bd4d0cccdfc8aea1618ed185afe"
           },
           "attempted_remedy_hash": "sha256:62bbf42510dc9515eaf7fdac6a99e6543af59857a65dec55020ce04b09e234e3"
+        },
+        {
+          "loop": 4,
+          "loop_local_id": "F1",
+          "status": "resolved",
+          "sha": "0d964bb3bcb3ff2f9b31e3281e7c471fc99711bc",
+          "fingerprint": {
+            "claim_consequence_hash": "sha256:7a8789df062d955a8ea69123cac0258aaf0ee02633cef692049f498d3b357958",
+            "evidence_paths_hash": "sha256:3d1f9a3d7b9de9bfba6752b7e56f8e84b0149bd4d0cccdfc8aea1618ed185afe"
+          },
+          "attempted_remedy_hash": "sha256:62bbf42510dc9515eaf7fdac6a99e6543af59857a65dec55020ce04b09e234e3"
         }
       ]
     },
@@ -182,7 +193,7 @@
       "severity": "Noticeable weakness",
       "first_seen_loop": 1,
       "first_seen_sha": "765b17b82f110f53ab23cc09718cfb630acf3a52",
-      "last_seen_loop": 3,
+      "last_seen_loop": 4,
       "occurrences": [
         {
           "loop": 1,
@@ -216,6 +227,45 @@
             "evidence_paths_hash": "sha256:34a5ba6d5b33a8ac284901fa623406ae3028832a6a4062ef90070734f557b0e6"
           },
           "attempted_remedy_hash": "sha256:319ea554fc9b4eed4f3f39ed61871847e4067a253497eb32ce8a114fa2031dcf"
+        },
+        {
+          "loop": 4,
+          "loop_local_id": "F3",
+          "status": "open",
+          "sha": "0d964bb3bcb3ff2f9b31e3281e7c471fc99711bc",
+          "fingerprint": {
+            "claim_consequence_hash": "sha256:fc6b701f55f9806faca33ff2a2895300b6d5b3012072373126e5247f67ff858a",
+            "evidence_paths_hash": "sha256:34a5ba6d5b33a8ac284901fa623406ae3028832a6a4062ef90070734f557b0e6"
+          },
+          "attempted_remedy_hash": "sha256:319ea554fc9b4eed4f3f39ed61871847e4067a253497eb32ce8a114fa2031dcf"
+        }
+      ]
+    },
+    {
+      "stable_id": "F-006",
+      "title": "search_boards still fuses filtering, the network date-scan and all terminal rendering (~690 lines)",
+      "category_hint": "file-length",
+      "primary_file": "soundboard-snag.py",
+      "primary_evidence_lines": [
+        702,
+        1396
+      ],
+      "test_failed": "Shallow module",
+      "severity": "Serious deduction",
+      "first_seen_loop": 4,
+      "first_seen_sha": "0d964bb3bcb3ff2f9b31e3281e7c471fc99711bc",
+      "last_seen_loop": 4,
+      "occurrences": [
+        {
+          "loop": 4,
+          "loop_local_id": "F2",
+          "status": "open",
+          "sha": "0d964bb3bcb3ff2f9b31e3281e7c471fc99711bc",
+          "fingerprint": {
+            "claim_consequence_hash": "sha256:14b26fc209316d7c7258e88cd16547b52f0a0204a32182df067588e9f8b4e363",
+            "evidence_paths_hash": "sha256:851dbaad079050426eaa849db9d9867839ed2fd478bb8fa01d7c1a362eba3d49"
+          },
+          "attempted_remedy_hash": "sha256:370b35de02bed4d39236be95d7ff86854e1d95ff6cbecf00403531f6260a4e3d"
         }
       ]
     }

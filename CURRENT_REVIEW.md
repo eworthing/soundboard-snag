@@ -1,74 +1,74 @@
 <!-- loop_cap: 10 -->
 
 ### Loop Counter
-Loop 3 of 10 (cap)
+Loop 4 of 10 (cap)
 
 ### System Flag
 [STATE: CONTINUE]
 
-(Discovery + Authority Map first-loop-only — see REVIEW_HISTORY.md loop 1. Provider claude_code; loop inline in main (Opus); reviewer + challenger spawned independently. Branch `contest-refactor`, base for this loop `db6f0bf`.)
+(Discovery + Authority Map first-loop-only — see REVIEW_HISTORY.md loop 1. Provider claude_code; loop inline in main (Opus); reviewer + challenger spawned independently. Branch `contest-refactor`, base for this loop `0d964bb`.)
 
 ---
 
 ## Contest Verdict
 **Good app, but not top-tier yet.**
 
-The three structural anchors are now addressed or in hand: the central record is a named `BoardResult`, the pure helpers have a real test suite (visible this loop, lifting test_strategy and credibility), and this loop extracts the per-board parse into a testable module-level function. What keeps it short of top-tier is the still-large `search_boards` (transport + filter + date-scan + render remain fused) plus two small residuals (a dead wrapper, duplicated render blocks).
+Loop 3's parse extraction (now visible) lifts architecture, simplicity, domain modeling, test strategy and credibility. This loop clears the dead wrapper. The remaining gap to top-tier is that `search_boards` still fuses filtering, the network date-scan and all terminal rendering in ~690 lines, with two duplicated render blocks.
 
 ## Scorecard (1-10)
-- Architecture quality: **5.5** | SAME | at loop-3 start `search_boards` still fuses concerns; parse extraction is this loop's fix (scored next loop)
+- Architecture quality: **6.5** | UP | `_parse_board_html` is a separate tested Module (commit 0d964bb); residual: filter/date-scan/render still fused (702-1396)
 - State management: **7.5** | SAME | one writer per concern; immutable instance attrs
-- Domain modeling: **6.0** | SAME | `BoardResult` names the record; `sounds_info` bare 2-tuples, `approx_source` stringly-typed
-- Data flow: **7.0** | SAME | named-field contract; residual: `main` re-filters (1591) vs `search_boards` filter (1247)
-- Framework / platform: **7.0** | SAME | idiomatic stdlib; defensive sanitization; HTTPS; no secrets
-- Concurrency: **9.5** | SAME | synchronous, no shared-mutable hazard. *Accepted residual:* `time.sleep` pacing is etiquette (permanent carve-out)
-- Code simplicity: **5.0** | SAME | ~734-line function, dup render (1190≈1367; 1280≈1392), dead wrapper (319) remain at loop start
-- Test strategy: **6.5** | UP | `test_soundboard_snag.py` (commit db6f0bf) — 24 real assertions at the pure-helper Interfaces. Residual: `search_boards` parse/network paths untested (addressed this loop)
-- Overall credibility: **6.5** | UP | a real suite now backs the helper claims; `BoardResult` self-describing; code honest
+- Domain modeling: **6.5** | UP | `ParsedBoard` NamedTuple added (0d964bb); residual: `sounds_info` bare 2-tuples, `approx_source` stringly-typed
+- Data flow: **7.0** | SAME | named-field contracts; residual: `main` re-filters (~1585)
+- Framework / platform: **7.0** | SAME | idiomatic stdlib; defensive sanitization; HTTPS
+- Concurrency: **9.5** | SAME | synchronous, no shared-mutable hazard. *Accepted residual:* `time.sleep` pacing (permanent carve-out)
+- Code simplicity: **6.0** | UP | `search_boards` shrank ~734→~694 (0d964bb); residual: dead wrapper (fixed this loop) + dup render (1184≈1361; 1274≈1386)
+- Test strategy: **7.0** | UP | `ParseBoardHtmlTests` added (0d964bb); 28 tests; residual: filter/date-scan/render paths untested
+- Overall credibility: **7.0** | UP | parse now test-backed; two named domain records; honest code
 
 ## Strengths That Matter
-- The loop-2 suite exercises the branchy logic (sanitization, compact-views parsing) at the real Interfaces — not glue or snapshots.
-- `BoardResult` keeps the search output self-describing at no runtime cost.
+- Two extraction loops (`BoardResult`, `_parse_board_html`) each behavior-preserving and independently reviewed — honest refactor history.
+- Pure helpers and per-board parse both fixture-tested at their real Interfaces.
 - Synchronous design + defensive sanitization remain real strengths.
 
 ## Findings
 
-### Finding F1 (stable F-002): ~734-line `search_boards` fuses transport, parsing, filtering, dates, rendering — *Priority 1, fixed this loop*
-**Evidence** — `soundboard-snag.py:708-1402`; inline parse block `883-943`. **Test failed** — Shallow module. **Dependency** — `in-process`. **Severity** — Serious deduction.
-**Minimal correction path** — extract pure `html -> ParsedBoard` parse to `_parse_board_html`; add fixture tests. De-risked by the helper suite.
+### Finding F1 (stable F-004): Dead pass-through wrapper `_fetch_last_modified` — *Priority 1, fixed this loop*
+**Evidence** — `soundboard-snag.py:319-322`; zero callers (incl. `debug_track_dates.py`). **Test failed** — Deletion test. **Severity** — Cosmetic.
+**Minimal correction path** — delete it (zero-risk subtractive win first, Meta-Rule 5).
 
-### Finding F2 (stable F-004): Dead pass-through wrapper `_fetch_last_modified`
-**Evidence** — `soundboard-snag.py:319-322`; zero callers. **Test failed** — Deletion test. **Severity** — Cosmetic.
-**Minimal correction path** — delete it.
+### Finding F2 (stable F-006, new): `search_boards` still fuses filtering, network date-scan and all rendering (~690 lines)
+**Evidence** — `soundboard-snag.py:702-1396`; inline filter `1095-1150`; inline results render `1332-1390`. **Test failed** — Shallow module. **Dependency** — `in-process`. **Severity** — Serious deduction.
+**Minimal correction path** — over next loops, extract a pure filter evaluator + render/format helpers, each fixture-tested; do not extract the network date-scan; no class hierarchy.
 
 ### Finding F3 (stable F-005): Date-display and skipped-breakdown rendering duplicated
-**Evidence** — `1175-1190`≈`1352-1367`; `1270-1280`≈`1382-1392`. **Test failed** — Deletion test. **Severity** — Noticeable weakness.
-**Minimal correction path** — extract format helpers taking a `BoardResult` + date-stats map.
+**Evidence** — `1169-1184`≈`1346-1361`; `1264-1274`≈`1376-1386`. **Test failed** — Deletion test. **Severity** — Noticeable weakness.
+**Minimal correction path** — fold into the F-006 render helpers.
 
 ## Simplification Check
-- Structurally necessary: F2 extraction passes Shallow-module test — parse is now a Module (html in, ParsedBoard out) with Depth, reached directly by tests.
-- New seam justified: no (in-process pure function).
-- Should NOT be done: parser class hierarchy / strategy / port; extracting the network-bound date-scan this loop.
-- Tests after fix: `ParseBoardHtmlTests` (full/play-only/dedup/empty) at the new `_parse_board_html` Interface; no old tests become shallow.
+- Structurally necessary: F-004 passes the Deletion test (zero callers → complexity vanishes).
+- New seam justified: no.
+- Should NOT be done: touch `_fetch_last_modified_detailed`/cache (the live path).
+- Tests after fix: none needed; 28-test suite stays green as regression guard.
 
 ## Improvement Backlog
-1. **Extract pure per-board HTML parsing from `search_boards` (F-002)** — structural, needed for winning. (architecture/simplicity/test_strategy +)
-2. **Delete dead `_fetch_last_modified` (F-004)** — simplification, helpful. (simplicity +)
-3. **De-duplicate date-display + skipped-breakdown render blocks (F-005)** — simplification, helpful. (simplicity +)
+1. **Delete dead `_fetch_last_modified` (F-004)** — simplification, helpful. Zero-risk subtractive win. (simplicity +)
+2. **Extract pure filter evaluation + render/format helpers from `search_boards` (F-006)** — structural, needed for winning. Largest remaining lever. (architecture/simplicity/test_strategy +)
+3. **Fold duplicated date-display + skipped-breakdown render blocks (F-005)** — simplification, helpful; folded into F-006. (simplicity +)
 
 ## Deepening Candidates
-- **`_parse_board_html`** (friction in F2): extracted this loop; fixture-tested; do not add a parser class hierarchy.
+- **Filter evaluation + result rendering** (friction in F-006): extract pure `_evaluate_filters(...)` → (meets, reasons) and `BoardResult`→str render helpers; fixture-tested; do not extract the network date-scan; no renderer class hierarchy.
 
 ## Builder Notes
-1. **Pure computation fused inside an I/O loop** — move the pure block to a module-level function (raw in, named record out); the loop binds locals from it.
-2. **Return a named record from a parser** — give the extracted parser a NamedTuple result so call sites + tests read fields by name.
-3. **Test the extracted Interface with a synthetic fixture** — assert each field on a small representative input plus an empty-input case.
+1. **Clear the certain subtractive win first** — take the dead-code deletion in its own commit before the larger refactor; it shrinks the surface to reason about.
+2. **Deletion test before removing any wrapper** — grep every caller across the whole repo (incl. standalone scripts) first.
+3. **Name the next structural target precisely** — re-derive the residual into a concrete finding with file:line (which sub-blocks are still fused), not a vague "it's big".
 
 ## Final Judge Narrative
-Place — a good app, not yet top-tier. Named `BoardResult`, a real helper suite (lifting test_strategy + credibility this loop), and this loop's extraction of the per-board parse into a fixture-tested `_parse_board_html`. `search_boards` still owns transport, filtering, the network date-scan and rendering, so architecture/simplicity climb next loop. Ownership and concurrency trustworthy. Remaining backlog is small and subtractive; standing risk is over-decomposition the single-file design does not need.
+Place — a good app, climbing steadily. Loop 3's parse extraction shows up across five dimensions; this loop takes the certain subtractive win. The honest residual is named precisely: `search_boards` still fuses filter evaluation and two render sections in ~690 lines, with duplicated render blocks. Ownership and concurrency trustworthy. Next: extract a pure filter evaluator and render helpers while resisting any renderer class hierarchy the single-file design does not need.
 
-## Loop 3 Result
-Extracted the pure per-board HTML parsing out of `search_boards` into a module-level `_parse_board_html(board_html) -> ParsedBoard` (NamedTuple); `search_boards` now calls it and binds locals from the result. Added `ParseBoardHtmlTests` (4 fixture tests: full board, play-only, download-id de-dup, empty HTML). `py_compile` passes; `python3 -m unittest test_soundboard_snag` runs 28 tests, all OK; `--help` exits 0. The extraction reuses identical regexes/dedup/unescape logic (behavior-preserving); grep confirms parse regexes no longer appear in the `search_boards` body, which shrank ~734→~694 lines. Targeted finding **F-002 is resolved**. No scorecard regression.
+## Loop 4 Result
+Deleted the dead pass-through wrapper `_fetch_last_modified` (4 lines + a surrounding blank line); the live path uses `_fetch_last_modified_detailed` and the `fetch_last_modified_cached` closure. `py_compile` passes; `python3 -m unittest test_soundboard_snag` runs 28 tests, all OK; `--help` exits 0; grep confirms the non-detailed wrapper no longer appears and `debug_track_dates.py` never referenced it; net −6 lines. Targeted finding **F-004 is resolved**. No scorecard regression.
 
-## Loop 3 Implementation Review
-Independent reviewer (Sonnet, read-only): **approved**. Reality passed (`_parse_board_html`/`ParsedBoard` exist; all parse regexes gone from `search_boards`, only render-label prints remain), Honesty passed (line-by-line vs `HEAD`: every regex/dedup/unescape identical → behavior-preserving; no costume layer/port; 4 tests assert real fields at the new Interface), Regression passed (all 10 locals rebound; `boards_with_downloads_total`/`status`/`preview_count` preserved). 0 regressions, 0 conditions, 1 round.
+## Loop 4 Implementation Review
+Independent reviewer (Sonnet, read-only): **approved**. Reality passed (wrapper gone; zero references to the non-detailed name in either file), Honesty passed (purely subtractive; `_fetch_last_modified_detailed` + cache closure untouched), Regression passed (no dangling reference; live path intact). 0 regressions, 0 conditions, 1 round.

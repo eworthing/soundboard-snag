@@ -1094,6 +1094,319 @@
           }
         ]
       }
+    },
+    {
+      "schema_version": 4,
+      "loop": 4,
+      "loop_cap": 10,
+      "state": "CONTINUE",
+      "halt_subtype": null,
+      "halt_handoff_text": null,
+      "halt_handoff": null,
+      "re_validated_at_sha": null,
+      "re_validation_context": null,
+      "dry_run": false,
+      "strictness": "standard",
+      "loop_metrics": null,
+      "run_id": null,
+      "source_rev": null,
+      "candidate_fingerprint": null,
+      "halt_success_challenge": null,
+      "provider": "claude_code",
+      "loop_model": "claude-opus-4-8",
+      "loop_model_source": "default",
+      "reviewer_model": "claude-sonnet-4-6",
+      "reviewer_model_source": "default",
+      "spawn_isolation": "inline",
+      "_spawn_isolation_note": "Loop body inline in main (Opus); Step-3 reviewer + HALT challenger spawned as independent subagents.",
+      "findings_registry_path": "./findings_registry.json",
+      "discovery": null,
+      "verdict": "Good app, but not top-tier yet",
+      "verdict_explanation": "Loop 3's parse extraction (now visible) lifts architecture, simplicity, domain modeling, test strategy and credibility. This loop clears the dead wrapper. The remaining gap to top-tier is that search_boards still fuses filtering, the network date-scan and all terminal rendering in ~690 lines, with two duplicated render blocks.",
+      "scorecard": {
+        "architecture_quality": {
+          "score": 6.5,
+          "delta": "UP",
+          "proof": "per-board parse now a separate tested Module (_parse_board_html, commit 0d964bb); search_boards no longer fuses parsing. Residual: it still fuses filtering, date-scan and rendering (soundboard-snag.py:702-1396)",
+          "residual_blocking_10": null,
+          "residual_disposition": null,
+          "residual_rationale_or_backlog_ref": null,
+          "unverifiable_due_to_build_failure": false
+        },
+        "state_management": {
+          "score": 7.5,
+          "delta": "SAME",
+          "proof": "single-threaded; one writer per concern; immutable instance attrs",
+          "residual_blocking_10": null,
+          "residual_disposition": null,
+          "residual_rationale_or_backlog_ref": null,
+          "unverifiable_due_to_build_failure": false
+        },
+        "domain_modeling": {
+          "score": 6.5,
+          "delta": "UP",
+          "proof": "ParsedBoard NamedTuple added (commit 0d964bb) \u2014 a second named domain record. Residual: sounds_info still bare 2-tuples, approx_source stringly-typed",
+          "residual_blocking_10": null,
+          "residual_disposition": null,
+          "residual_rationale_or_backlog_ref": null,
+          "unverifiable_due_to_build_failure": false
+        },
+        "data_flow": {
+          "score": 7.0,
+          "delta": "SAME",
+          "proof": "named-field contracts; residual: main re-filters results (soundboard-snag.py:~1585) duplicating search_boards' filter",
+          "residual_blocking_10": null,
+          "residual_disposition": null,
+          "residual_rationale_or_backlog_ref": null,
+          "unverifiable_due_to_build_failure": false
+        },
+        "framework_idioms": {
+          "score": 7.0,
+          "delta": "SAME",
+          "proof": "idiomatic stdlib; defensive sanitization; HTTPS; no secrets",
+          "residual_blocking_10": null,
+          "residual_disposition": null,
+          "residual_rationale_or_backlog_ref": null,
+          "unverifiable_due_to_build_failure": false
+        },
+        "concurrency": {
+          "score": 9.5,
+          "delta": "SAME",
+          "proof": "no async/threading \u2014 synchronous CLI, no shared-mutable hazard",
+          "residual_blocking_10": "time.sleep pacing is intentional server etiquette, not a determinism hazard",
+          "residual_disposition": "accepted",
+          "residual_rationale_or_backlog_ref": "Tool is deliberately synchronous; no concurrency model to make safer. Permanent design carve-out.",
+          "unverifiable_due_to_build_failure": false
+        },
+        "simplicity": {
+          "score": 6.0,
+          "delta": "UP",
+          "proof": "search_boards shrank ~734->~694 after the parse extraction (commit 0d964bb). Residual: dead wrapper (fixed this loop) + duplicated render blocks (1184 vs 1361; 1274 vs 1386)",
+          "residual_blocking_10": null,
+          "residual_disposition": null,
+          "residual_rationale_or_backlog_ref": null,
+          "unverifiable_due_to_build_failure": false
+        },
+        "test_strategy": {
+          "score": 7.0,
+          "delta": "UP",
+          "proof": "ParseBoardHtmlTests added (commit 0d964bb) \u2014 the per-board parse Interface is now fixture-tested; 28 tests total. Residual: search_boards' filtering/date-scan/rendering paths untested",
+          "residual_blocking_10": null,
+          "residual_disposition": null,
+          "residual_rationale_or_backlog_ref": null,
+          "unverifiable_due_to_build_failure": false
+        },
+        "credibility": {
+          "score": 7.0,
+          "delta": "UP",
+          "proof": "parse logic now backed by direct tests (commit 0d964bb); two named domain records; code remains honest with no fake-clean",
+          "residual_blocking_10": null,
+          "residual_disposition": null,
+          "residual_rationale_or_backlog_ref": null,
+          "unverifiable_due_to_build_failure": false
+        }
+      },
+      "authority_map": [],
+      "strengths": [
+        "Two extraction loops (BoardResult, _parse_board_html) have each been behavior-preserving and independently reviewed \u2014 the refactor history is honest",
+        "The pure helpers and the per-board parse are both fixture-tested at their real Interfaces",
+        "Synchronous design + defensive sanitization remain real strengths"
+      ],
+      "findings": [
+        {
+          "loop_local_id": "F1",
+          "stable_id": "F-004",
+          "title": "Dead pass-through wrapper _fetch_last_modified",
+          "why_it_matters": "Unused indirection adds reading cost and a second name for one behavior with no caller to justify it.",
+          "what_is_wrong": "_fetch_last_modified wrapped _fetch_last_modified_detailed and discarded the diagnostic, but nothing in the module (or the standalone debug_track_dates.py) called it.",
+          "evidence": [
+            "soundboard-snag.py:319-322 (definition at loop-4 start)",
+            "grep confirms zero callers in soundboard-snag.py and debug_track_dates.py"
+          ],
+          "test_failed": "Deletion test",
+          "dependency_category": "in-process",
+          "leverage_impact": "None \u2014 the wrapper buys nothing.",
+          "locality_impact": "Minor: a reader had to confirm it was unused before trusting the live path.",
+          "metric_signal": "none",
+          "why_weakens_submission": "A pass-through wrapper with no caller is dead weight the deletion test removes cleanly.",
+          "severity": "Cosmetic for contest",
+          "adr_conflicts": [],
+          "adr_reopen_justification": null,
+          "minimal_correction_path": "Delete _fetch_last_modified. Zero-risk subtractive win taken first (Meta-Rule 5) before the larger render/filter extraction.",
+          "blast_radius": {
+            "change": [
+              "soundboard-snag.py"
+            ],
+            "avoid": [
+              "_fetch_last_modified_detailed",
+              "fetch_last_modified_cached"
+            ]
+          }
+        },
+        {
+          "loop_local_id": "F2",
+          "stable_id": "F-006",
+          "title": "search_boards still fuses filtering, the network date-scan and all terminal rendering (~690 lines)",
+          "why_it_matters": "The remaining biggest structural deduction: filter evaluation and result rendering are pure/near-pure but cannot be tested because they are inlined in the network loop.",
+          "what_is_wrong": "After the parse extraction, search_boards still inlines: the filter evaluation (meets_filters / filter_reasons), the best-effort date-scan reduction, and two large rendering sections (per-board summary + final results render).",
+          "evidence": [
+            "soundboard-snag.py:702-1396 (function span)",
+            "soundboard-snag.py:1095-1150 (inline filter evaluation)",
+            "soundboard-snag.py:1332-1390 (inline results render)"
+          ],
+          "test_failed": "Shallow module",
+          "dependency_category": "in-process",
+          "leverage_impact": "Maintainers still hold ~690 lines in one scope to change filtering or output.",
+          "locality_impact": "A filter or formatting change still risks the rest of the function via shared locals.",
+          "metric_signal": "none",
+          "why_weakens_submission": "Filtering and formatting are testable logic kept unreachable by fusion with I/O; this caps architecture, simplicity and test strategy.",
+          "severity": "Serious deduction",
+          "adr_conflicts": [],
+          "adr_reopen_justification": null,
+          "minimal_correction_path": "Over the next loops, extract a pure filter evaluator (parsed + thresholds -> pass/fail + reasons) and pure render/format helpers (BoardResult -> str), each fixture-tested; do not extract the network date-scan loop itself (it is I/O-bound). No class hierarchy.",
+          "blast_radius": {
+            "change": [
+              "soundboard-snag.py",
+              "test_soundboard_snag.py"
+            ],
+            "avoid": [
+              "SoundboardSnag class",
+              "transport/urlopen calls",
+              "main argparse"
+            ]
+          }
+        },
+        {
+          "loop_local_id": "F3",
+          "stable_id": "F-005",
+          "title": "Date-display and skipped-breakdown rendering duplicated near-verbatim",
+          "why_it_matters": "Two copies of the same presentation logic must be kept in sync by hand; they will drift.",
+          "what_is_wrong": "The approx-updated date block and the skipped-buckets breakdown block each appear twice with near-identical bodies.",
+          "evidence": [
+            "soundboard-snag.py:1169-1184 vs 1346-1361 (date-display block)",
+            "soundboard-snag.py:1264-1274 vs 1376-1386 (skipped-breakdown block)"
+          ],
+          "test_failed": "Deletion test",
+          "dependency_category": "in-process",
+          "leverage_impact": "A formatting change must be made in two places.",
+          "locality_impact": "Drift between the two copies produces inconsistent output for the same data.",
+          "metric_signal": "none",
+          "why_weakens_submission": "Duplicate presentation logic is a simplification deduction; it is subsumed by the render extraction in F-006.",
+          "severity": "Noticeable weakness",
+          "adr_conflicts": [],
+          "adr_reopen_justification": null,
+          "minimal_correction_path": "When extracting render helpers for F-006, fold the two duplicated blocks into single module-level format helpers taking a BoardResult and the date-stats map.",
+          "blast_radius": {
+            "change": [
+              "soundboard-snag.py"
+            ],
+            "avoid": [
+              "search/transport loop"
+            ]
+          }
+        }
+      ],
+      "simplification_check": {
+        "structurally_necessary": "F-004 passes the Deletion test: removing _fetch_last_modified makes complexity vanish (zero callers), not reappear.",
+        "new_seam_justified": false,
+        "new_seam_adapters": [],
+        "helpful_simplification": "Removing dead code first keeps the subsequent render/filter extraction (F-006) cleaner.",
+        "should_not_be_done": "Do not, while deleting the wrapper, also touch _fetch_last_modified_detailed or the cache \u2014 they are the live path.",
+        "tests_after_fix": "No test change needed \u2014 the wrapper had no callers and no tests; the 28-test suite stays green as a regression guard."
+      },
+      "backlog": [
+        {
+          "priority": 1,
+          "title": "Delete dead wrapper _fetch_last_modified (F-004)",
+          "kind": "simplification",
+          "rank": "helpful",
+          "why_it_matters": "Zero-risk subtractive win cleared before the larger render/filter extraction.",
+          "score_impact": "simplicity +"
+        },
+        {
+          "priority": 2,
+          "title": "Extract pure filter evaluation and render/format helpers from search_boards (F-006)",
+          "kind": "structural",
+          "rank": "needed for winning",
+          "why_it_matters": "Largest remaining structural lever; makes filtering and formatting testable and shrinks the function.",
+          "score_impact": "architecture +, simplicity +, test_strategy +"
+        },
+        {
+          "priority": 3,
+          "title": "Fold the duplicated date-display and skipped-breakdown render blocks (F-005)",
+          "kind": "simplification",
+          "rank": "helpful",
+          "why_it_matters": "Removes drift-prone copies; folded into the F-006 render extraction.",
+          "score_impact": "simplicity +"
+        }
+      ],
+      "unresolved_reason": null,
+      "deepening_candidates": [
+        {
+          "candidate_module": "Filter evaluation + result rendering inside search_boards",
+          "source_friction_proven": "Finding F-006 \u2014 filtering and formatting are pure but inlined in the network loop, so untestable",
+          "why_shallow_or_misplaced": "There is no filter or render Interface; both are inlined across ~690 lines of one function.",
+          "behavior_to_move_behind_interface": "Pure filter evaluation (parsed fields + thresholds -> pass/fail + reasons) and pure BoardResult-to-string render helpers.",
+          "dependency_category": "in-process",
+          "test_surface_after_change": "test_soundboard_snag.py asserts filter pass/fail and rendered strings without network.",
+          "smallest_first_step": "Extract a pure _evaluate_filters(...) returning (meets, reasons); call it from the loop.",
+          "what_not_to_do": "Do not extract the network date-scan loop; do not add a renderer class hierarchy."
+        }
+      ],
+      "builder_notes": [
+        {
+          "pattern": "Clear the certain subtractive win before the big refactor",
+          "how_to_recognize": "A zero-risk deletion (dead code) sits alongside a larger structural change in the backlog.",
+          "smallest_coding_rule": "Take the deletion first in its own commit; it shrinks the surface the larger refactor must reason about.",
+          "stack_example": "Python: delete an uncalled wrapper before extracting the render helpers from the same file."
+        },
+        {
+          "pattern": "Deletion test before removing any wrapper",
+          "how_to_recognize": "A thin function delegates to another; you suspect it is unused.",
+          "smallest_coding_rule": "grep every caller across the whole repo (including standalone scripts) before deleting; confirm complexity vanishes, not relocates.",
+          "stack_example": "Python: confirm both soundboard-snag.py and debug_track_dates.py have zero references."
+        },
+        {
+          "pattern": "Name the next structural target precisely once the headline one is fixed",
+          "how_to_recognize": "After resolving the biggest finding, a vaguer 'still large' feeling remains.",
+          "smallest_coding_rule": "Re-derive the residual into a concrete finding with file:line evidence (which sub-blocks are still fused) so the backlog stays honest.",
+          "stack_example": "Python: 'search_boards still inlines filter eval (1095-1150) and render (1332-1390)' is actionable; 'search_boards is big' is not."
+        }
+      ],
+      "narrative": "Place \u2014 a good app, climbing steadily. Loop 3's parse extraction now shows up across five dimensions, and this loop takes the certain subtractive win (dead wrapper). The honest residual is named precisely: search_boards still fuses filter evaluation and two render sections in ~690 lines, with duplicated render blocks. Ownership and concurrency remain trustworthy. Next loops should extract a pure filter evaluator and render helpers (testable, subtractive in cognitive load) while resisting any renderer class hierarchy the single-file design does not need.",
+      "loop_result": {
+        "what_changed": "Deleted the dead pass-through wrapper _fetch_last_modified (4 lines + surrounding blank line) from soundboard-snag.py; the live path uses _fetch_last_modified_detailed and the fetch_last_modified_cached closure.",
+        "evidence_change_is_honest": "python3 -m py_compile passes; python3 -m unittest test_soundboard_snag runs 28 tests, all OK; --help exits 0; grep confirms _fetch_last_modified (non-detailed) no longer appears in soundboard-snag.py and debug_track_dates.py never referenced it; net -6 lines.",
+        "risk_boundary_evidence": null,
+        "targeted_finding_status": "resolved",
+        "unintended_regression": null,
+        "changed_paths": [
+          "soundboard-snag.py"
+        ],
+        "interface_test_coverage_path": null
+      },
+      "implementation_review": {
+        "verdict": "approved",
+        "reason": "The dead 4-line wrapper _fetch_last_modified (plus surrounding blank lines) was deleted; zero remaining references to the non-detailed name exist in soundboard-snag.py or debug_track_dates.py; _fetch_last_modified_detailed and the fetch_last_modified_cached closure are untouched; the diff is purely subtractive with no costume layer, suppression, or regression.",
+        "checks": {
+          "reality": "passed",
+          "honesty": "passed",
+          "regression": "passed"
+        },
+        "regressions": [],
+        "conditions": [],
+        "rounds": 1,
+        "retry_count": 1,
+        "retry_cause": null,
+        "retry_attempts": [
+          {
+            "attempt": 1,
+            "outcome": "ok",
+            "error": null,
+            "duration_ms": 39278
+          }
+        ]
+      }
     }
   ]
 }
