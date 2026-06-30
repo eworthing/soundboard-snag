@@ -15,10 +15,17 @@ the deterministic helpers so future refactors get a regression signal. Run with:
     python3 -m unittest test_soundboard_snag
 """
 
+import http.client
 import importlib.util
+import inspect
 import io
+import json
 import os
 import re
+import shutil
+import sys
+import tempfile
+import threading
 import unittest
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
@@ -538,6 +545,685 @@ class SnagPipelineTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as cm:
             snag._fetch_page()
         self.assertIn("Network error", str(cm.exception))
+
+
+# ── Helpers for new seam guards ──────────────────────────────────────────────
+
+def _has_param(callable_obj, param_name):
+    """Return True if callable_obj's signature includes param_name (safe wrapper)."""
+    try:
+        return param_name in inspect.signature(callable_obj).parameters
+    except (ValueError, TypeError):
+        return False
+
+
+# ── BoardResultToDictTests ────────────────────────────────────────────────────
+
+@unittest.skipUnless(hasattr(sb, "board_result_to_dict"), "seam not implemented yet")
+class BoardResultToDictTests(unittest.TestCase):
+    """board_result_to_dict() serialises a BoardResult to a plain dict.
+
+    Expected keys (from the plan's HTTP/serialisation section):
+        board, name, has_downloads, sounds, total_count, description,
+        category, views, views_int, tags, approx_updated, approx_source
+
+    Naming notes:
+        board == name == BoardResult.board_name  (both present for round-trip)
+        sounds  == [{"id": ..., "title": ...}, ...]  derived from sounds_info
+        description == board_desc
+        approx_updated == ISO-8601 string when a datetime is present, else None
+    """
+
+    def _call(self, **overrides):
+        board = _make_board(**overrides)
+        return sb.board_result_to_dict(board)
+
+    def test_all_expected_keys_present(self):
+        d = self._call()
+        expected = {
+            "board", "name", "title", "image", "has_downloads", "sounds", "total_count",
+            "description", "category", "views", "views_int", "tags",
+            "approx_updated", "approx_source",
+        }
+        self.assertEqual(set(d.keys()), expected)
+
+    def test_board_and_name_equal_board_name(self):
+        d = self._call(board_name="starwars")
+        self.assertEqual(d["board"], "starwars")
+        self.assertEqual(d["name"], "starwars")
+        self.assertEqual(d["board"], d["name"])
+
+    def test_sounds_is_list_of_id_title_dicts(self):
+        d = self._call(sounds_info=[("42", "Pew"), ("99", "Boom")])
+        self.assertEqual(d["sounds"], [{"id": "42", "title": "Pew"}, {"id": "99", "title": "Boom"}])
+
+    def test_sounds_empty_list_when_no_sounds(self):
+        d = self._call(sounds_info=[])
+        self.assertEqual(d["sounds"], [])
+
+    def test_approx_updated_none_when_none(self):
+        d = self._call(approx_updated=None)
+        self.assertIsNone(d["approx_updated"])
+
+    def test_approx_updated_iso8601_string_when_datetime(self):
+        dt = datetime(2025, 3, 15, 12, 0, 0, tzinfo=timezone.utc)
+        d = self._call(approx_updated=dt)
+        iso = d["approx_updated"]
+        self.assertIsInstance(iso, str)
+        # Must be parseable as an ISO-8601 datetime
+        parsed = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        self.assertEqual(parsed.year, 2025)
+        self.assertEqual(parsed.month, 3)
+        self.assertEqual(parsed.day, 15)
+
+    def test_description_comes_from_board_desc(self):
+        d = self._call(board_desc="A great board")
+        self.assertEqual(d["description"], "A great board")
+
+    def test_scalar_fields_pass_through(self):
+        d = self._call(
+            has_downloads=False,
+            total_count=77,
+            category="Movies",
+            views="5,000",
+            views_int=5000,
+            tags=["funny", "memes"],
+            approx_source="track",
+        )
+        self.assertFalse(d["has_downloads"])
+        self.assertEqual(d["total_count"], 77)
+        self.assertEqual(d["category"], "Movies")
+        self.assertEqual(d["views"], "5,000")
+        self.assertEqual(d["views_int"], 5000)
+        self.assertEqual(d["tags"], ["funny", "memes"])
+        self.assertEqual(d["approx_source"], "track")
+
+    def test_percent_encoded_board_name_preserved(self):
+        # board_name may contain %-encoded chars; the identifier must round-trip
+        d = self._call(board_name="star%20wars")
+        self.assertEqual(d["board"], "star%20wars")
+        self.assertEqual(d["name"], "star%20wars")
+
+
+# ── JsonOutputTests ───────────────────────────────────────────────────────────
+
+@unittest.skipUnless(hasattr(sb, "board_result_to_dict"), "seam not implemented yet")
+class JsonOutputTests(unittest.TestCase):
+    """--search --json serialisation path (offline).
+
+    NOTE: The end-to-end --json CLI path (subprocess + real argparse dispatch)
+    is covered by the manual verification step in the plan (step 5).  These
+    tests cover the board_result_to_dict helper, which is the only new logic,
+    to confirm the JSON payload is valid and free of ANSI codes.
+    """
+
+    def test_list_serialises_to_valid_json(self):
+        boards = [
+            _make_board(board_name="alpha", sounds_info=[("1", "A")]),
+            _make_board(board_name="beta", has_downloads=False, sounds_info=[]),
+        ]
+        dicts = [sb.board_result_to_dict(b) for b in boards]
+        payload = json.dumps(dicts, default=str)
+        parsed = json.loads(payload)
+        self.assertIsInstance(parsed, list)
+        self.assertEqual(len(parsed), 2)
+
+    def test_json_payload_contains_no_ansi_escape_codes(self):
+        board = _make_board(board_name="sw", category="Movies")
+        payload = json.dumps([sb.board_result_to_dict(board)])
+        self.assertNotIn("\033[", payload)
+
+    def test_board_name_round_trips_through_json(self):
+        board = _make_board(board_name="star%20wars")
+        parsed = json.loads(json.dumps([sb.board_result_to_dict(board)]))
+        self.assertEqual(parsed[0]["board"], "star%20wars")
+
+    def test_approx_updated_serialises_as_json_string_not_object(self):
+        # board_result_to_dict must convert the datetime to a string so that
+        # json.dumps succeeds without a custom encoder
+        dt = datetime(2025, 6, 1, tzinfo=timezone.utc)
+        board = _make_board(approx_updated=dt)
+        d = sb.board_result_to_dict(board)
+        payload = json.dumps(d)  # must not raise TypeError
+        parsed = json.loads(payload)
+        self.assertIsInstance(parsed["approx_updated"], str)
+
+    def test_none_approx_updated_serialises_as_json_null(self):
+        board = _make_board(approx_updated=None)
+        d = sb.board_result_to_dict(board)
+        payload = json.dumps(d)
+        parsed = json.loads(payload)
+        self.assertIsNone(parsed["approx_updated"])
+
+
+# ── SearchBoardsRenderTests ───────────────────────────────────────────────────
+
+_RENDER_SEAM_GUARD = unittest.skipUnless(
+    _has_param(sb.search_boards, "render"),
+    "render= seam not implemented yet",
+)
+
+
+@_RENDER_SEAM_GUARD
+class SearchBoardsRenderTests(unittest.TestCase):
+    """search_boards(render=False) must produce NO stdout while returning results.
+
+    Each test captures stdout around a search_boards() call and asserts that
+    render=False → empty capture, render=True → non-empty capture.  Stubs the
+    fetch= seam (same style as SearchBoardsOrchestrationTests) so no real
+    network.  Does NOT use contextlib.redirect_stdout in the production call
+    itself — search_boards must gate its own prints (R2-N1 / B1 in the plan).
+    """
+
+    def _call(self, fake_pages, render, **extra):
+        """Run search_boards with a stub fetcher; return (results, captured_stdout)."""
+        def fetch(url):
+            if url in fake_pages:
+                return fake_pages[url]
+            raise URLError("no such page")
+
+        params = dict(
+            max_results=10, min_views=0, min_sounds=0,
+            include_dates=False, progress=False, verbose=False,
+            render=render,
+        )
+        params.update(extra)
+        buf = io.StringIO()
+        with mock.patch("time.sleep"), redirect_stdout(buf):
+            results = sb.search_boards("q", fetch=fetch, **params)
+        return results, buf.getvalue()
+
+    def test_render_false_no_stdout_normal_results(self):
+        pages = {
+            f"{B}/search/q": _search_page(["sw"]),
+            f"{B}/sb/sw": _board_page([("1", "X")], "100"),
+        }
+        results, out = self._call(pages, render=False)
+        self.assertEqual(out, "")
+        self.assertEqual(len(results), 1)
+
+    def test_render_false_no_stdout_zero_results(self):
+        pages = {f"{B}/search/q": _search_page([])}
+        results, out = self._call(pages, render=False)
+        self.assertEqual(out, "")
+        self.assertIsInstance(results, list)
+
+    def test_render_false_no_stdout_on_board_fetch_error(self):
+        # "broken" slug not in pages → fetch raises URLError → search_boards handles it
+        pages = {f"{B}/search/q": _search_page(["broken"])}
+        results, out = self._call(pages, render=False)
+        self.assertEqual(out, "")
+
+    def test_render_false_no_stdout_when_board_filtered_out(self):
+        pages = {
+            f"{B}/search/q": _search_page(["low"]),
+            f"{B}/sb/low": _board_page([("1", "x")], "1"),  # 1 view < min_views 10
+        }
+        results, out = self._call(pages, render=False, min_views=10)
+        self.assertEqual(out, "")
+        self.assertEqual(results, [])
+
+    def test_render_true_produces_stdout(self):
+        """Sanity: render=True (default) must still print something."""
+        pages = {
+            f"{B}/search/q": _search_page(["sw"]),
+            f"{B}/sb/sw": _board_page([("1", "X")], "100"),
+        }
+        results, out = self._call(pages, render=True)
+        self.assertGreater(len(out.strip()), 0)
+        self.assertEqual(len(results), 1)
+
+
+# ── SnagEventCbTests ──────────────────────────────────────────────────────────
+
+_SNAG_EVENT_CB_GUARD = unittest.skipUnless(
+    _has_param(sb.SoundboardSnag.__init__, "event_cb"),
+    "event_cb seam not implemented yet",
+)
+
+
+@_SNAG_EVENT_CB_GUARD
+class SnagEventCbTests(unittest.TestCase):
+    """SoundboardSnag event_cb / render / cancel_event seams.
+
+    Downloads are stubbed by patching the instance method _snag_sound — exactly
+    like SnagPipelineTests.test_consecutive_failure_abort — so no network or
+    real filesystem writes occur.  _snag_sound return-value contract:
+        (True,  (name, kb))  → file_saved event
+        (None,  name)        → file_skipped event
+        (False, err_msg)     → file_failed event
+
+    Verified event sequence (team-lead confirmed against real backend):
+        download_start → board_parsed → file_start → file_saved (×N) → download_complete
+    After cancel mid-run:
+        … file_saved → download_aborted → download_complete
+        (download_complete always fires; it's the summary step)
+
+    event_cb contract (plan N3):
+        download_start{board, total}
+        board_parsed{count}
+        file_start{i, n, sound_id}
+        file_saved{i, n, name, kb}
+        file_skipped{i, n, name}
+        file_failed{i, n, error}
+        download_aborted{reason}
+        download_complete{snagged, existing, failed}
+        download_error{error}
+    """
+
+    # Minimal HTML fixtures — one, two, and three downloadable sounds
+    _HTML_ONE = _board_item("1", "Sound A", True)
+    _HTML_TWO = _board_item("1", "Sound A", True) + _board_item("2", "Sound B", True)
+    _HTML_THREE = (
+        _board_item("1", "Sound A", True) +
+        _board_item("2", "Sound B", True) +
+        _board_item("3", "Sound C", True)
+    )
+
+    def _run_snag(self, html, tmpdir, snag_results=None, **kwargs):
+        """Build SoundboardSnag, stub _snag_sound, run snag(), return captured stdout.
+
+        snag_results is a list of return values for successive _snag_sound calls:
+            [(True, ("Clip.mp3", 1.0)), ...]  → success
+            [(None, "Clip.mp3"), ...]          → already-exists skip
+            [(False, "error msg"), ...]        → failure
+        """
+        if snag_results is None:
+            snag_results = [(True, ("Clip.mp3", 1.0))]
+        snag_obj = sb.SoundboardSnag(
+            "https://www.soundboard.com/sb/test",
+            fetcher=lambda url: html,
+            download_root=tmpdir,
+            **kwargs,
+        )
+        buf = io.StringIO()
+        with mock.patch.object(snag_obj, "_snag_sound", side_effect=snag_results), \
+             mock.patch("time.sleep"), \
+             redirect_stdout(buf):
+            snag_obj.snag()
+        return buf.getvalue()
+
+    def _normalize(self, text, tmpdir):
+        """Replace tmpdir absolute path so two independent runs can be compared."""
+        return text.replace(os.path.abspath(tmpdir), "<ROOT>")
+
+    def test_byte_identical_output_with_explicit_defaults(self):
+        """event_cb=None, render=True must produce byte-identical output to no-kwargs."""
+        results = [(True, ("Clip.mp3", 1.0))]
+        with tempfile.TemporaryDirectory() as tmp1, \
+             tempfile.TemporaryDirectory() as tmp2:
+            out_legacy = self._run_snag(self._HTML_ONE, tmp1, snag_results=list(results))
+            out_new = self._run_snag(
+                self._HTML_ONE, tmp2, snag_results=list(results),
+                event_cb=None, render=True,
+            )
+        self.assertEqual(self._normalize(out_legacy, tmp1), self._normalize(out_new, tmp2))
+
+    def test_event_cb_receives_documented_events_in_order(self):
+        """event_cb gets download_start → board_parsed → file_start/file_saved → download_complete."""
+        events = []
+
+        def cb(event_type, **fields):
+            events.append(event_type)
+
+        snag_results = [(True, ("ClipA.mp3", 1.0)), (True, ("ClipB.mp3", 2.0))]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snag_obj = sb.SoundboardSnag(
+                "https://www.soundboard.com/sb/test",
+                fetcher=lambda url: self._HTML_TWO,
+                download_root=tmpdir,
+                event_cb=cb,
+                render=False,
+            )
+            with mock.patch.object(snag_obj, "_snag_sound", side_effect=snag_results), \
+                 mock.patch("time.sleep"), \
+                 redirect_stdout(io.StringIO()):
+                snag_obj.snag()
+
+        self.assertIn("download_start", events)
+        self.assertIn("board_parsed", events)
+        self.assertIn("file_start", events)
+        self.assertIn("file_saved", events)
+        self.assertIn("download_complete", events)
+
+        # Ordering: download_start → board_parsed → first file_start → … → download_complete
+        self.assertLess(events.index("download_start"), events.index("board_parsed"))
+        self.assertLess(events.index("board_parsed"), events.index("file_start"))
+        self.assertEqual(events[-1], "download_complete")
+
+    def test_render_false_with_event_cb_produces_no_stdout(self):
+        """render=False suppresses all snag() prints even when event_cb is set."""
+        snag_results = [(True, ("Clip.mp3", 1.0)), (True, ("Clip2.mp3", 2.0))]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = self._run_snag(
+                self._HTML_TWO, tmpdir,
+                snag_results=snag_results,
+                event_cb=lambda t, **f: None,
+                render=False,
+            )
+        self.assertEqual(out, "")
+
+    def test_cancel_event_set_before_run_aborts_with_download_aborted(self):
+        """cancel_event already set → loop exits before first file; emits download_aborted."""
+        events = []
+
+        def cb(event_type, **fields):
+            events.append(event_type)
+
+        cancel = threading.Event()
+        cancel.set()  # pre-set → abort immediately when the loop checks
+
+        snag_results = [(True, ("Clip.mp3", 1.0)), (True, ("Clip2.mp3", 2.0))]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snag_obj = sb.SoundboardSnag(
+                "https://www.soundboard.com/sb/test",
+                fetcher=lambda url: self._HTML_TWO,
+                download_root=tmpdir,
+                event_cb=cb,
+                render=False,
+                cancel_event=cancel,
+            )
+            with mock.patch.object(snag_obj, "_snag_sound", side_effect=snag_results), \
+                 mock.patch("time.sleep"), \
+                 redirect_stdout(io.StringIO()):
+                snag_obj.snag()
+
+        self.assertIn("download_aborted", events)
+        self.assertNotIn("file_saved", events)
+
+    def test_cancel_event_mid_run_stops_between_files(self):
+        """cancel_event set during first file_saved callback stops before file 2 and 3.
+
+        Verified contract (team-lead confirmed):
+            download_start, board_parsed, file_start, file_saved,
+            download_aborted, download_complete
+        download_complete always fires (it's the summary step, not skipped on abort).
+        """
+        events = []
+        file_saved_count = [0]
+        cancel = threading.Event()
+
+        def cb(event_type, **fields):
+            events.append(event_type)
+            if event_type == "file_saved":
+                file_saved_count[0] += 1
+                cancel.set()  # arm cancellation after the first completed file
+
+        snag_results = [
+            (True, ("ClipA.mp3", 1.0)),
+            (True, ("ClipB.mp3", 2.0)),
+            (True, ("ClipC.mp3", 3.0)),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snag_obj = sb.SoundboardSnag(
+                "https://www.soundboard.com/sb/test",
+                fetcher=lambda url: self._HTML_THREE,
+                download_root=tmpdir,
+                event_cb=cb,
+                render=False,
+                cancel_event=cancel,
+            )
+            with mock.patch.object(snag_obj, "_snag_sound", side_effect=snag_results), \
+                 mock.patch("time.sleep"), \
+                 redirect_stdout(io.StringIO()):
+                snag_obj.snag()
+
+        self.assertIn("download_aborted", events)
+        self.assertIn("download_complete", events)  # summary always fires
+        self.assertEqual(file_saved_count[0], 1)    # exactly one file saved before abort
+        self.assertLess(events.count("file_saved"), 3)
+
+
+# ── ServerProtocolTests ───────────────────────────────────────────────────────
+
+_SERVER_SEAM_GUARD = unittest.skipUnless(
+    hasattr(sb, "run_server"),
+    "run_server entrypoint not implemented yet",
+)
+
+
+@_SERVER_SEAM_GUARD
+class ServerProtocolTests(unittest.TestCase):
+    """HTTP server protocol tests (stdlib http.client; engines stubbed offline).
+
+    Boots sb.run_server(host, port, download_root) in a daemon thread bound to
+    an ephemeral port.  sb._http_get is monkeypatched so the search worker runs
+    fully offline — no real soundboard.com requests escape.
+
+    IMPORTANT: the server thread is NOT wrapped in redirect_stdout — run_server
+    calls serve_forever() which never returns, so a redirect_stdout context
+    would swallow all process stdout until the process exits.  Any server
+    banner lines that appear in test output are expected and harmless.
+
+    Verified routes (team-lead confirmed against real backend):
+        GET  /../soundboard-snag.py          → 404 (path-traversal rejected)
+        GET  /api/search  (no q)             → 400
+        GET  /api/search?q=x&sort=bad        → 400
+        GET  /api/board/a%2Fb                → 400 (slash in board name)
+        POST /api/download  (bad JSON)       → 400
+        POST /api/download  (missing board)  → 400
+        POST /api/download  {board:""}       → 400
+        POST /api/download  {board:"a/b"}    → 400
+        POST /api/download  (escaping root)  → 400
+        GET  /api/search?q=test              → 200 text/event-stream, final event: results
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import socket as _socket
+        import time as _time
+
+        # Stub _http_get before the server thread starts so searches run offline
+        cls._original_http_get = sb._http_get
+
+        def fake_http_get(url):
+            if "/search/" in url:
+                return _search_page(["testboard"])
+            return _board_page([("1", "Sound A"), ("2", "Sound B")], "100")
+
+        sb._http_get = fake_http_get
+        cls.tmpdir = tempfile.mkdtemp()
+
+        # Grab an ephemeral port then release it; run_server binds the same port
+        s = _socket.socket()
+        s.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", 0))
+        cls.port = s.getsockname()[1]
+        s.close()
+
+        t = threading.Thread(
+            target=lambda: sb.run_server("127.0.0.1", cls.port, cls.tmpdir),
+            daemon=True,
+        )
+        t.start()
+
+        # Poll until the server is accepting connections (up to 5 s)
+        for _ in range(50):
+            try:
+                _socket.create_connection(("127.0.0.1", cls.port), timeout=0.1).close()
+                break
+            except OSError:
+                _time.sleep(0.1)
+        else:
+            raise unittest.SkipTest("Server did not start within 5 s")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmpdir, ignore_errors=True)
+        sb._http_get = cls._original_http_get
+
+    def _conn(self):
+        return http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+
+    def _read_sse_frames(self, body_text):
+        """Parse a raw SSE body into a list of (event_type, data_str) tuples."""
+        frames = []
+        current_event = None
+        current_data = []
+        for line in body_text.splitlines():
+            if line.startswith("event:"):
+                current_event = line[len("event:"):].strip()
+            elif line.startswith("data:"):
+                current_data.append(line[len("data:"):].strip())
+            elif line == "" and (current_event is not None or current_data):
+                frames.append((current_event, "\n".join(current_data)))
+                current_event = None
+                current_data = []
+        if current_event is not None or current_data:
+            frames.append((current_event, "\n".join(current_data)))
+        return frames
+
+    # -- Static path traversal ------------------------------------------------
+
+    def test_path_traversal_dot_dot_rejected(self):
+        """GET /../soundboard-snag.py must not return 200 with source contents."""
+        conn = self._conn()
+        try:
+            conn.request("GET", "/../soundboard-snag.py")
+            resp = conn.getresponse()
+            self.assertNotEqual(resp.status, 200)
+        finally:
+            conn.close()
+
+    # -- /api/search ----------------------------------------------------------
+
+    def test_search_missing_q_returns_400(self):
+        conn = self._conn()
+        try:
+            conn.request("GET", "/api/search")
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 400)
+        finally:
+            conn.close()
+
+    def test_search_bad_sort_param_returns_400(self):
+        conn = self._conn()
+        try:
+            conn.request("GET", "/api/search?q=test&sort=notavalidsort")
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 400)
+        finally:
+            conn.close()
+
+    def test_search_content_type_is_event_stream(self):
+        conn = self._conn()
+        try:
+            conn.request("GET", "/api/search?q=test")
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 200)
+            self.assertIn("text/event-stream", resp.getheader("Content-Type", ""))
+        finally:
+            conn.close()
+
+    def test_search_stream_ends_with_results_event(self):
+        conn = self._conn()
+        try:
+            conn.request("GET", "/api/search?q=test")
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 200)
+            frames = self._read_sse_frames(resp.read().decode("utf-8"))
+            event_types = [e for e, _ in frames]
+            self.assertIn("results", event_types)
+            self.assertEqual(event_types[-1], "results")
+        finally:
+            conn.close()
+
+    def test_search_results_frame_is_valid_json_list(self):
+        conn = self._conn()
+        try:
+            conn.request("GET", "/api/search?q=test")
+            resp = conn.getresponse()
+            frames = self._read_sse_frames(resp.read().decode("utf-8"))
+            data = next((d for e, d in frames if e == "results"), None)
+            self.assertIsNotNone(data, "No 'results' frame in SSE stream")
+            self.assertIsInstance(json.loads(data), list)
+        finally:
+            conn.close()
+
+    def test_search_worker_exception_yields_error_event(self):
+        """When the search engine raises, the stream must include an error event."""
+        original = sb._http_get
+        sb._http_get = lambda url: (_ for _ in ()).throw(RuntimeError("simulated failure"))
+        conn = self._conn()
+        try:
+            conn.request("GET", "/api/search?q=test")
+            resp = conn.getresponse()
+            body = resp.read().decode("utf-8")
+            if resp.status == 200:
+                event_types = [e for e, _ in self._read_sse_frames(body)]
+                self.assertIn("error", event_types)
+        finally:
+            sb._http_get = original
+            conn.close()
+
+    # -- /api/board -----------------------------------------------------------
+
+    def test_board_with_slash_in_name_returns_400(self):
+        """Board identifier containing a path separator → 400 (guardrail B2)."""
+        conn = self._conn()
+        try:
+            conn.request("GET", "/api/board/a%2Fb")
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 400)
+        finally:
+            conn.close()
+
+    # -- /api/download --------------------------------------------------------
+
+    def test_download_bad_json_body_returns_400(self):
+        conn = self._conn()
+        try:
+            conn.request("POST", "/api/download", body=b"not json",
+                         headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 400)
+        finally:
+            conn.close()
+
+    def test_download_missing_board_field_returns_400(self):
+        conn = self._conn()
+        try:
+            body = json.dumps({"something": "else"}).encode()
+            conn.request("POST", "/api/download", body=body,
+                         headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 400)
+        finally:
+            conn.close()
+
+    def test_download_empty_board_returns_400(self):
+        conn = self._conn()
+        try:
+            body = json.dumps({"board": ""}).encode()
+            conn.request("POST", "/api/download", body=body,
+                         headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 400)
+        finally:
+            conn.close()
+
+    def test_download_board_with_slash_returns_400(self):
+        conn = self._conn()
+        try:
+            body = json.dumps({"board": "foo/bar"}).encode()
+            conn.request("POST", "/api/download", body=body,
+                         headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 400)
+        finally:
+            conn.close()
+
+    def test_download_root_escaping_returns_400(self):
+        """download_root that would escape the server root → 400 (guardrail B4)."""
+        conn = self._conn()
+        try:
+            body = json.dumps({"board": "starwars", "download_root": "/tmp/../../etc"}).encode()
+            conn.request("POST", "/api/download", body=body,
+                         headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 400)
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

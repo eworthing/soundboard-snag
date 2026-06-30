@@ -106,6 +106,36 @@ class BoardResult(NamedTuple):
     views_int: int
     approx_updated: Optional[datetime]
     approx_source: Optional[str]
+    title: Optional[str] = None  # human-readable board title (best-effort; falls back to slug)
+    image: Optional[str] = None  # board cover-art URL (best-effort; None when no custom icon)
+
+
+def board_result_to_dict(board):
+    """Serialize a BoardResult into a JSON-safe dict.
+
+    Shared by the ``--json`` CLI mode and the web search API so both speak the
+    same shape. ``board`` is the identifier a client echoes back to
+    ``/api/download`` / ``/api/board`` (it is ``board_name``, the same value the
+    CLI quotes via ``_quote_path_segment`` to build ``/sb/<…>`` URLs — there is no
+    separate raw-slug field in the data model). ``approx_updated`` is ISO-8601
+    UTC or ``None``.
+    """
+    return {
+        "board": board.board_name,
+        "name": board.title or board.board_name,
+        "title": board.title,
+        "image": board.image,
+        "has_downloads": bool(board.has_downloads),
+        "sounds": [{"id": sid, "title": title} for sid, title in board.sounds_info],
+        "total_count": board.total_count,
+        "description": board.board_desc,
+        "category": board.category,
+        "views": board.views,
+        "views_int": board.views_int,
+        "tags": list(board.tags),
+        "approx_updated": board.approx_updated.isoformat() if board.approx_updated else None,
+        "approx_source": board.approx_source,
+    }
 
 
 class ParsedBoard(NamedTuple):
@@ -126,6 +156,41 @@ class ParsedBoard(NamedTuple):
     tags: List[str]
     sounds_info: List[Tuple[str, str]]
     sound_count: int
+
+
+def _extract_board_title(board_html):
+    """Best-effort human-readable board title from board-page HTML.
+
+    Prefers the page ``<h1>`` (e.g. "Star wars Battle sounds"); falls back to
+    ``<title>`` minus the " - Soundboard.com ..." site suffix. Returns a cleaned
+    display string, or None when nothing usable is found (caller falls back to
+    the slug). Pure/no I/O.
+    """
+    raw = None
+    h1 = re.search(r'<h1[^>]*>(.*?)</h1>', board_html, re.DOTALL | re.IGNORECASE)
+    if h1:
+        raw = re.sub(r'<[^>]+>', '', h1.group(1))
+    else:
+        t = re.search(r'<title>(.*?)</title>', board_html, re.DOTALL | re.IGNORECASE)
+        if t:
+            raw = re.split(r'\s*-\s*Soundboard\.com', t.group(1), 1)[0]
+    if raw is None:
+        return None
+    title = re.sub(r'\s+', ' ', html.unescape(raw)).strip()
+    return title or None
+
+
+def _extract_board_image(board_html):
+    """Best-effort board cover-art URL from board-page HTML.
+
+    soundboard.com renders the board icon as a ``page-bg`` background image,
+    e.g. ``url(/boardicon/<slug>.jpg)``. Returns an absolute URL, or None when
+    the board has no custom icon (the default ``/images/unknown.png`` path is
+    not under ``/boardicon/`` so it is correctly ignored → caller/UI fall back
+    to a placeholder). Pure/no I/O.
+    """
+    m = re.search(r'/boardicon/[^\s"\')]+', board_html)
+    return (BASE_URL + m.group(0)) if m else None
 
 
 def _parse_board_html(board_html):
@@ -468,7 +533,8 @@ class JsonlLogger:
 class SoundboardSnag:
     """Snags and manages soundboard audio files."""
 
-    def __init__(self, soundboard_url, download_root=None, fetcher=None):
+    def __init__(self, soundboard_url, download_root=None, fetcher=None,
+                 event_cb=None, render=True, cancel_event=None):
         """Initialize snag tool with a soundboard URL.
 
         Args:
@@ -477,7 +543,17 @@ class SoundboardSnag:
             download_root: Optional root directory for downloads. If None, uses CWD.
             fetcher: Optional callable(url) -> decoded page text. Defaults to
                 _http_get (real network). Tests inject an in-memory fake to
-                exercise snag()'s guard and abort logic offline.
+                exercise snag()'s guard and abort logic offline. Covers the board
+                *page* fetch only; per-track downloads go through ``urlopen``.
+            event_cb: Optional callable(event_type, **fields) invoked alongside
+                printing at each step (download_start, file_start, file_saved, …).
+                The web layer passes a sink that pushes onto an SSE queue. Default
+                ``None`` is a no-op, so CLI behavior is unchanged.
+            render: When False, all human stdout output from snag() is suppressed
+                (the web/programmatic path). Default True = current CLI output.
+            cancel_event: Optional ``threading.Event``; when set mid-run the
+                per-file loop stops between files and emits ``download_aborted``.
+                Default ``None`` never cancels.
 
         Raises:
             ValueError: If the URL format is invalid or board name cannot
@@ -488,6 +564,9 @@ class SoundboardSnag:
         self.base_url = BASE_URL
         self.download_root = download_root if download_root else os.getcwd()
         self.fetcher = fetcher if fetcher is not None else _http_get
+        self.event_cb = event_cb
+        self.render = render
+        self.cancel_event = cancel_event
 
     def _extract_board_slug_and_name(self):
         """Extract the board slug (URL-safe) and a display name from the URL path.
@@ -712,10 +791,18 @@ class SoundboardSnag:
 
     def snag(self):
         """Main snagging process."""
+        def rprint(*args, **kwargs):
+            if self.render:
+                print(*args, **kwargs)
+
+        def emit(event_type, **fields):
+            if self.event_cb is not None:
+                self.event_cb(event_type, **fields)
+
         if self.board_slug and self.board_name and self.board_slug != self.board_name:
-            print(f"{Colors.BOLD}{Colors.CYAN}Snagging from board: {self.board_name} ({self.board_slug}){Colors.RESET}")
+            rprint(f"{Colors.BOLD}{Colors.CYAN}Snagging from board: {self.board_name} ({self.board_slug}){Colors.RESET}")
         else:
-            print(f"{Colors.BOLD}{Colors.CYAN}Snagging from board: {self.board_name}{Colors.RESET}")
+            rprint(f"{Colors.BOLD}{Colors.CYAN}Snagging from board: {self.board_name}{Colors.RESET}")
 
         # Fetch and parse page
         html_content = self._fetch_page()
@@ -728,25 +815,28 @@ class SoundboardSnag:
         if not sound_items:
             raise RuntimeError("No audio files found on this soundboard page")
 
-        print(f"{Colors.GREEN}Located {len(sound_items)} audio files to snag!{Colors.RESET}")
+        rprint(f"{Colors.GREEN}Located {len(sound_items)} audio files to snag!{Colors.RESET}")
 
         # Check if downloads are enabled - fail fast if not
         if not has_downloads:
             board_url = self._board_url()
-            print(f"\n{Colors.RED}❌ ERROR: This board has downloads disabled!{Colors.RESET}")
-            print(f"   Found {len(sound_items)} sounds but {Colors.YELLOW}no download buttons{Colors.RESET}.")
-            print(f"   The board owner has restricted this board to play-only mode.")
-            print(f"\n   Board URL: {Colors.CYAN}{board_url}{Colors.RESET}")
-            print(f"   You can verify by visiting the board and checking for download links.")
-            print(f"\n   This board cannot be downloaded. Please try a different board.")
-            print(f"   Boards with download buttons will work (e.g., starwars, R2D2_R2_D2_sounds)")
+            rprint(f"\n{Colors.RED}❌ ERROR: This board has downloads disabled!{Colors.RESET}")
+            rprint(f"   Found {len(sound_items)} sounds but {Colors.YELLOW}no download buttons{Colors.RESET}.")
+            rprint(f"   The board owner has restricted this board to play-only mode.")
+            rprint(f"\n   Board URL: {Colors.CYAN}{board_url}{Colors.RESET}")
+            rprint(f"   You can verify by visiting the board and checking for download links.")
+            rprint(f"\n   This board cannot be downloaded. Please try a different board.")
+            rprint(f"   Boards with download buttons will work (e.g., starwars, R2D2_R2_D2_sounds)")
             raise RuntimeError("Board has downloads disabled - cannot proceed")
 
-        print(f"   {Colors.GRAY}({download_count} download buttons detected){Colors.RESET}")
+        rprint(f"   {Colors.GRAY}({download_count} download buttons detected){Colors.RESET}")
+
+        emit("download_start", board=self.board_name, total=len(sound_items))
+        emit("board_parsed", count=len(sound_items))
 
         # Show download location
         output_dir = os.path.join(self.download_root, self._board_output_dirname())
-        print(f"   {Colors.GRAY}Download location: {os.path.abspath(output_dir)}{Colors.RESET}\n")
+        rprint(f"   {Colors.GRAY}Download location: {os.path.abspath(output_dir)}{Colors.RESET}\n")
 
         # Download each sound
         snagged_count = 0
@@ -757,46 +847,57 @@ class SoundboardSnag:
         early_exit = False
 
         for i, (sound_id, page_title) in enumerate(sound_items, 1):
-            print(f"{Colors.GRAY}[{i}/{len(sound_items)}]{Colors.RESET} Snagging audio ID {Colors.CYAN}{sound_id}{Colors.RESET}...")
+            # Best-effort cooperative cancellation (web client disconnect).
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                emit("download_aborted", reason="cancelled")
+                early_exit = True
+                break
+
+            rprint(f"{Colors.GRAY}[{i}/{len(sound_items)}]{Colors.RESET} Snagging audio ID {Colors.CYAN}{sound_id}{Colors.RESET}...")
+            emit("file_start", i=i, n=len(sound_items), sound_id=sound_id)
 
             # Create output directory only when needed (before first download attempt)
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
-                print(f"  {Colors.BLUE}Created directory: {os.path.abspath(output_dir)}{Colors.RESET}")
+                rprint(f"  {Colors.BLUE}Created directory: {os.path.abspath(output_dir)}{Colors.RESET}")
 
             result, data = self._snag_sound(sound_id, page_title, output_dir)
 
             if result is True:
                 final_filename, size_kb = data
-                print(f"  {Colors.GREEN}✓ Snagged:{Colors.RESET} {final_filename} {Colors.GRAY}({size_kb:.1f} KB){Colors.RESET}")
+                rprint(f"  {Colors.GREEN}✓ Snagged:{Colors.RESET} {final_filename} {Colors.GRAY}({size_kb:.1f} KB){Colors.RESET}")
                 snagged_count += 1
                 consecutive_failures = 0  # Reset on success
+                emit("file_saved", i=i, n=len(sound_items), name=final_filename, kb=round(size_kb, 1))
             elif result is None:
-                print(f"  {Colors.YELLOW}○ Skipped (exists):{Colors.RESET} {data}")
+                rprint(f"  {Colors.YELLOW}○ Skipped (exists):{Colors.RESET} {data}")
                 existing_count += 1
                 consecutive_failures = 0  # Reset on skip (file exists = not a failure)
+                emit("file_skipped", i=i, n=len(sound_items), name=data)
             else:
-                print(f"  {Colors.RED}✗ Failed:{Colors.RESET} {data}")
+                rprint(f"  {Colors.RED}✗ Failed:{Colors.RESET} {data}")
                 failed_count += 1
                 consecutive_failures += 1
+                emit("file_failed", i=i, n=len(sound_items), error=data)
 
                 # Check if we've hit the consecutive failure limit
                 if consecutive_failures >= max_consecutive_failures:
                     remaining = len(sound_items) - i
-                    print(f"\n{Colors.RED}❌ ERROR: {consecutive_failures} consecutive download failures detected!{Colors.RESET}")
-                    print(f"   This board appears to have invalid or broken download links.")
-                    print(f"   Attempted: {i}/{len(sound_items)} files")
-                    print(f"   Skipping remaining {remaining} file(s) to avoid wasting time and server resources.")
+                    rprint(f"\n{Colors.RED}❌ ERROR: {consecutive_failures} consecutive download failures detected!{Colors.RESET}")
+                    rprint(f"   This board appears to have invalid or broken download links.")
+                    rprint(f"   Attempted: {i}/{len(sound_items)} files")
+                    rprint(f"   Skipping remaining {remaining} file(s) to avoid wasting time and server resources.")
 
                     # Clean up empty directory if no files were successfully downloaded or existed
                     if snagged_count == 0 and existing_count == 0:
                         if os.path.exists(output_dir) and os.path.isdir(output_dir):
                             try:
                                 os.rmdir(output_dir)
-                                print(f"   {Colors.GRAY}Removed empty directory: {os.path.abspath(output_dir)}{Colors.RESET}")
+                                rprint(f"   {Colors.GRAY}Removed empty directory: {os.path.abspath(output_dir)}{Colors.RESET}")
                             except OSError:
                                 pass  # Directory not empty or other error, leave it
 
+                    emit("download_aborted", reason="too many consecutive failures")
                     early_exit = True
                     break
 
@@ -806,15 +907,16 @@ class SoundboardSnag:
 
         # Summary
         full_path = os.path.abspath(output_dir)
-        print(f"\n{Colors.GREEN}{Colors.BOLD}✓ Snagging complete!{Colors.RESET} {Colors.CYAN}{snagged_count}{Colors.RESET} files saved to:")
-        print(f"  {Colors.BOLD}{full_path}{Colors.RESET}")
+        rprint(f"\n{Colors.GREEN}{Colors.BOLD}✓ Snagging complete!{Colors.RESET} {Colors.CYAN}{snagged_count}{Colors.RESET} files saved to:")
+        rprint(f"  {Colors.BOLD}{full_path}{Colors.RESET}")
         if existing_count > 0:
-            print(f"  {Colors.YELLOW}({existing_count} files were already present){Colors.RESET}")
+            rprint(f"  {Colors.YELLOW}({existing_count} files were already present){Colors.RESET}")
         if failed_count > 0:
-            print(f"  {Colors.RED}⚠️  {failed_count} files failed to download{Colors.RESET}")
+            rprint(f"  {Colors.RED}⚠️  {failed_count} files failed to download{Colors.RESET}")
             if not has_downloads:
-                print(f"  Note: This board has downloads disabled by the owner.")
+                rprint(f"  Note: This board has downloads disabled by the owner.")
 
+        emit("download_complete", snagged=snagged_count, existing=existing_count, failed=failed_count)
         return not early_exit
 
 
@@ -833,6 +935,7 @@ def search_boards(
     verbose=False,
     logger=None,
     fetch=None,
+    render=True,
 ):
     """Search for soundboards with detailed information including filenames, category, and tags.
 
@@ -863,9 +966,13 @@ def search_boards(
         fetch = _http_get
     encoded_query = quote(query)
 
+    def rprint(*args, **kwargs):
+        if render:
+            print(*args, **kwargs)
+
     def vprint(message):
         if verbose:
-            print(f"{Colors.GRAY}[verbose]{Colors.RESET} {message}")
+            rprint(f"{Colors.GRAY}[verbose]{Colors.RESET} {message}")
 
     if logger:
         logger.event(
@@ -893,10 +1000,10 @@ def search_boards(
         filter_info.append(f"updated within {recent_days} days (approx)")
 
     filter_text = f" {Colors.GRAY}(filtering: {', '.join(filter_info)}){Colors.RESET}" if filter_info else ""
-    print(f"{Colors.BOLD}{Colors.CYAN}Searching for: '{query}'...{filter_text}{Colors.RESET}")
+    rprint(f"{Colors.BOLD}{Colors.CYAN}Searching for: '{query}'...{filter_text}{Colors.RESET}")
 
     if filter_info:
-        print(f"{Colors.GRAY}💡 Tip: Use --min-views 0 --min-sounds 0 to see all results{Colors.RESET}\n")
+        rprint(f"{Colors.GRAY}💡 Tip: Use --min-views 0 --min-sounds 0 to see all results{Colors.RESET}\n")
 
     recent_threshold = None
     if recent_days is not None:
@@ -932,8 +1039,8 @@ def search_boards(
     recent_near_misses_too_old = []  # List[Tuple[datetime, str]]
     recent_near_misses_unknown = []  # List[str]
 
-    progress_tty = bool(progress) and (not debug) and (not verbose) and sys.stdout.isatty()
-    progress_lines = bool(progress) and (not debug) and (not verbose) and (not sys.stdout.isatty())
+    progress_tty = bool(progress) and render and (not debug) and (not verbose) and sys.stdout.isatty()
+    progress_lines = bool(progress) and render and (not debug) and (not verbose) and (not sys.stdout.isatty())
     progress_len = 0
     last_progress_line_at = 0.0
 
@@ -956,7 +1063,7 @@ def search_boards(
             # Non-TTY fallback: print a status line occasionally.
             now = time.monotonic()
             if (now - last_progress_line_at) >= 2.0:
-                print(f"{Colors.GRAY}{msg}{Colors.RESET}")
+                rprint(f"{Colors.GRAY}{msg}{Colors.RESET}")
                 last_progress_line_at = now
 
     def _progress_clear():
@@ -992,19 +1099,19 @@ def search_boards(
         # Show "Searching..." message only in debug mode
         if debug:
             if page == 1:
-                print(f"{Colors.GRAY}Searching page {page}...{Colors.RESET}\n")
+                rprint(f"{Colors.GRAY}Searching page {page}...{Colors.RESET}\n")
             else:
-                print(f"{Colors.GRAY}Searching page {page} for more results...{Colors.RESET}\n")
+                rprint(f"{Colors.GRAY}Searching page {page} for more results...{Colors.RESET}\n")
         elif page == 1:
             # In normal mode, just show a simple searching message at the start
-            print(f"{Colors.GRAY}Searching...{Colors.RESET}\n")
+            rprint(f"{Colors.GRAY}Searching...{Colors.RESET}\n")
 
         try:
             html_content = fetch(search_url)
             if logger:
                 logger.event("search_page_fetch_ok", page=page, url=search_url, bytes=len(html_content))
         except (HTTPError, URLError) as e:
-            print(f"{Colors.RED}Error searching page {page}: {e}{Colors.RESET}")
+            rprint(f"{Colors.RED}Error searching page {page}: {e}{Colors.RESET}")
             if logger:
                 logger.event("search_page_fetch_error", page=page, url=search_url, error=str(e))
             break
@@ -1034,7 +1141,7 @@ def search_boards(
         # If no new boards found on this page, we've reached the end
         if not page_boards:
             _progress_clear()
-            print(f"{Colors.YELLOW}No more boards found (end of search results).{Colors.RESET}\n")
+            rprint(f"{Colors.YELLOW}No more boards found (end of search results).{Colors.RESET}\n")
             if logger:
                 logger.event("search_end_no_more_boards", page=page)
             break
@@ -1070,6 +1177,8 @@ def search_boards(
 
                 # Parse all board-page fields (pure; unit-tested via _parse_board_html)
                 parsed = _parse_board_html(board_html)
+                board_title = _extract_board_title(board_html)
+                board_image = _extract_board_image(board_html)
                 sound_matches = parsed.sound_matches
                 has_downloads = parsed.has_downloads
                 download_ids_deduped = parsed.download_ids
@@ -1264,21 +1373,21 @@ def search_boards(
                     # Print the board name line
                     if has_downloads and meets_filters:
                         # Normal mode: just show board name with counter
-                        print(f"{counter_display} {Colors.CYAN}{board_name}{Colors.RESET}")
+                        rprint(f"{counter_display} {Colors.CYAN}{board_name}{Colors.RESET}")
                     elif debug:
                         # Debug mode: show "Analyzing" prefix for non-qualifying boards
-                        print(f"{counter_display} Analyzing {Colors.CYAN}{board_name}{Colors.RESET}...")
+                        rprint(f"{counter_display} Analyzing {Colors.CYAN}{board_name}{Colors.RESET}...")
 
-                    print(f"  {status} {sound_count} sounds {Colors.GRAY}(views: {views if views else '0'}){Colors.RESET}")
+                    rprint(f"  {status} {sound_count} sounds {Colors.GRAY}(views: {views if views else '0'}){Colors.RESET}")
 
                     if include_dates:
                         updated_line = _format_updated_line(approx_updated, approx_source, board_date_stats.get(board_name))
-                        print(f"  {Colors.GRAY}{updated_line}{Colors.RESET}")
+                        rprint(f"  {Colors.GRAY}{updated_line}{Colors.RESET}")
 
                     # In debug mode, show why it was filtered
                     if debug and not meets_filters:
                         for reason in filter_reasons:
-                            print(f"  {Colors.YELLOW}⚠️  Filtered out: {reason}{Colors.RESET}")
+                            rprint(f"  {Colors.YELLOW}⚠️  Filtered out: {reason}{Colors.RESET}")
 
                 # Only add to results if it meets filters
                 if meets_filters:
@@ -1294,6 +1403,8 @@ def search_boards(
                         views_int=views_int,
                         approx_updated=approx_updated,
                         approx_source=approx_source,
+                        title=board_title,
+                        image=board_image,
                     ))
 
                     # Count downloadable boards that meet filters
@@ -1310,7 +1421,7 @@ def search_boards(
             except Exception as e:
                 boards_fetch_errors += 1
                 _progress_clear()
-                print(f"  {Colors.RED}Error: {e}{Colors.RESET}")
+                rprint(f"  {Colors.RED}Error: {e}{Colors.RESET}")
                 if logger:
                     logger.event("board_analyze_error", board=board_name, error=str(e))
                 # Don't increment downloadable_count on error
@@ -1342,20 +1453,20 @@ def search_boards(
 
     if not results:
         if skipped_count > 0:
-            print(f"\n{Colors.YELLOW}⚠️  No boards matched your filter criteria.{Colors.RESET}")
-            print(f"   {skipped_count} downloadable board(s) were skipped due to filters.")
-            print(f"   Diagnostics: analyzed {boards_analyzed_total} board(s) across up to {page} page(s); fetch errors: {boards_fetch_errors}.")
+            rprint(f"\n{Colors.YELLOW}⚠️  No boards matched your filter criteria.{Colors.RESET}")
+            rprint(f"   {skipped_count} downloadable board(s) were skipped due to filters.")
+            rprint(f"   Diagnostics: analyzed {boards_analyzed_total} board(s) across up to {page} page(s); fetch errors: {boards_fetch_errors}.")
             if include_dates or recent_threshold is not None or sort_by == "recent":
-                print(
+                rprint(
                     f"   Track-date coverage (downloadable boards): {boards_with_track_date_total} with dates, {boards_with_unknown_date_total} unknown."
                 )
                 if track_headers_total_total:
-                    print(
+                    rprint(
                         f"   Track headers overall: {track_headers_ok_total}/{track_headers_total_total} OK."
                     )
             breakdown = _format_skipped_breakdown(skipped_buckets)
             if breakdown:
-                print(f"   Skipped breakdown (may overlap): {breakdown}")
+                rprint(f"   Skipped breakdown (may overlap): {breakdown}")
 
             # If the date filter eliminated everything, suggest a more realistic --recent-days.
             if recent_threshold is not None:
@@ -1365,35 +1476,35 @@ def search_boards(
                     top = recent_near_misses_too_old[:3]
                     needed_days = []
 
-                    print(f"\n{Colors.GRAY}💡 Newest boards outside your {recent_days}-day window:{Colors.RESET}")
+                    rprint(f"\n{Colors.GRAY}💡 Newest boards outside your {recent_days}-day window:{Colors.RESET}")
                     for dt, board_name in top:
                         age_days = int(math.ceil((now_utc - dt).total_seconds() / 86400.0))
                         needed_days.append(age_days)
-                        print(
+                        rprint(
                             f"   - {Colors.CYAN}{board_name}{Colors.RESET}: {_format_date(dt)} (~{age_days} days ago)"
                         )
 
                     if needed_days:
                         suggested_days = max(needed_days)
                         start_date = (now_utc - timedelta(days=suggested_days)).date().isoformat()
-                        print(
+                        rprint(
                             f"   Try {Colors.YELLOW}--recent-days {suggested_days}{Colors.RESET} "
                             f"(window starts ~{start_date}) to include these."
                         )
 
                 if recent_near_misses_unknown:
                     # These can never satisfy a strict recent-days filter because updated date can't be inferred.
-                    print(
+                    rprint(
                         f"\n{Colors.GRAY}ℹ️  Also found {len(recent_near_misses_unknown)} downloadable board(s) with unknown updated dates; "
                         f"they can't pass a strict {Colors.YELLOW}--recent-days{Colors.RESET} filter.{Colors.RESET}"
                     )
-                    print(f"   Tip: Remove --recent-days to include them, or increase --date-sample-size for more thorough date inference.")
+                    rprint(f"   Tip: Remove --recent-days to include them, or increase --date-sample-size for more thorough date inference.")
 
-            print("   Try increasing --max, adjusting --min-views/--min-sounds, relaxing --recent-days, or use --debug to see why boards were filtered.")
+            rprint("   Try increasing --max, adjusting --min-views/--min-sounds, relaxing --recent-days, or use --debug to see why boards were filtered.")
         else:
-            print(f"\n{Colors.YELLOW}⚠️  No downloadable boards found.{Colors.RESET}")
-            print("   Try a different search, adjust filters with --min-views 0 --min-sounds 0, or use --debug to see all analyzed boards.")
-            print(f"   Diagnostics: analyzed {boards_analyzed_total} board(s) across up to {page} page(s); fetch errors: {boards_fetch_errors}.")
+            rprint(f"\n{Colors.YELLOW}⚠️  No downloadable boards found.{Colors.RESET}")
+            rprint("   Try a different search, adjust filters with --min-views 0 --min-sounds 0, or use --debug to see all analyzed boards.")
+            rprint(f"   Diagnostics: analyzed {boards_analyzed_total} board(s) across up to {page} page(s); fetch errors: {boards_fetch_errors}.")
         if logger:
             logger.event(
                 "search_end_no_results",
@@ -1409,31 +1520,356 @@ def search_boards(
             )
         return results
 
-    print(f"\n{Colors.BOLD}{'='*80}")
-    print(f"{'SEARCH RESULTS':^80}")
-    print(f"{'='*80}{Colors.RESET}\n")
+    rprint(f"\n{Colors.BOLD}{'='*80}")
+    rprint(f"{'SEARCH RESULTS':^80}")
+    rprint(f"{'='*80}{Colors.RESET}\n")
 
     for board in results:
         for line in _render_board_lines(board, board_date_stats.get(board.board_name), include_dates):
-            print(line)
-        print("\n")  # Two newlines after each board
+            rprint(line)
+        rprint("\n")  # Two newlines after each board
 
-    print(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
+    rprint(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
 
     # Show skipped boards summary if any were filtered out
     if skipped_count > 0:
-        print(f"\n{Colors.YELLOW}ℹ️  {skipped_count} downloadable board(s) were skipped due to filter criteria.{Colors.RESET}")
+        rprint(f"\n{Colors.YELLOW}ℹ️  {skipped_count} downloadable board(s) were skipped due to filter criteria.{Colors.RESET}")
         breakdown = _format_skipped_breakdown(skipped_buckets)
         if breakdown:
-            print(f"   Skipped breakdown (may overlap): {breakdown}")
+            rprint(f"   Skipped breakdown (may overlap): {breakdown}")
         if min_views > 0 or min_sounds > 0:
-            print(f"   Adjust --min-views or --min-sounds to include them in results.")
+            rprint(f"   Adjust --min-views or --min-sounds to include them in results.")
 
     if results and results[0].has_downloads:
-        print(f"\n{Colors.BOLD}To download a board, use:{Colors.RESET}")
-        print(f"  {Colors.GRAY}python3 soundboard-snag.py --board \"{results[0].board_name}\"{Colors.RESET}")
+        rprint(f"\n{Colors.BOLD}To download a board, use:{Colors.RESET}")
+        rprint(f"  {Colors.GRAY}python3 soundboard-snag.py --board \"{results[0].board_name}\"{Colors.RESET}")
 
     return results
+
+def run_server(host, port, download_root, logger=None, max_jobs=3):
+    """Start the local web UI + JSON/SSE API, reusing the search/download engines.
+
+    Additive feature: the one-shot CLI is unaffected. Server-side downloads land
+    under ``download_root`` (or CWD), mirroring the CLI. Stdlib only.
+    """
+    import json as _json
+    import threading
+    import queue as _queue
+    from http.server import BaseHTTPRequestHandler
+    try:
+        from http.server import ThreadingHTTPServer  # Python 3.7+
+    except ImportError:  # Python 3.6 fallback
+        import socketserver
+        from http.server import HTTPServer
+
+        class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+            daemon_threads = True
+    from urllib.parse import urlparse as _urlparse, parse_qs, unquote as _unquote
+
+    web_root = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web"))
+    server_root = os.path.realpath(download_root) if download_root else os.path.realpath(os.getcwd())
+    job_sem = threading.BoundedSemaphore(max_jobs)
+
+    CONTENT_TYPES = {
+        ".html": "text/html; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".js": "application/javascript; charset=utf-8",
+        ".svg": "image/svg+xml",
+        ".json": "application/json; charset=utf-8",
+        ".ico": "image/x-icon",
+        ".woff2": "font/woff2",
+    }
+
+    def emit_log(event_type, **fields):
+        if logger:
+            try:
+                logger.event(event_type, **fields)
+            except Exception:
+                pass
+
+    def valid_board(value):
+        # CLI parity: board_name is a display-ish identifier (may contain spaces/%).
+        # Reject only what could escape a path; _quote_path_segment encodes the rest.
+        if not value:
+            return False
+        if "/" in value or "\\" in value:
+            return False
+        if any(ord(c) < 32 for c in value):
+            return False
+        return True
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "soundboard-snag"
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, fmt, *args):
+            emit_log("http", msg=(fmt % args))
+
+        # ---- response helpers ----
+        def _send_json(self, obj, status=200):
+            body = _json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _send_bytes(self, body, content_type, status=200):
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")  # never cache dev assets (always refetch)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _start_sse(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+
+        def _sse_send(self, event, data):
+            try:
+                payload = "event: %s\ndata: %s\n\n" % (event, _json.dumps(data, ensure_ascii=False))
+                self.wfile.write(payload.encode("utf-8"))
+                self.wfile.flush()
+                return True
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return False
+
+        def _sse_comment(self):
+            try:
+                self.wfile.write(b": keepalive\n\n")
+                self.wfile.flush()
+                return True
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return False
+
+        def _pump(self, q, sentinel, cancel=None):
+            """Drain the worker queue to the SSE stream until the sentinel.
+
+            Returns when the worker signals completion or the client disconnects.
+            Sets ``cancel`` (if given) on disconnect so the worker can stop early.
+            """
+            while True:
+                try:
+                    item = q.get(timeout=15)
+                except _queue.Empty:
+                    if not self._sse_comment():
+                        if cancel is not None:
+                            cancel.set()
+                        return
+                    continue
+                if item is sentinel:
+                    return
+                event_type, data = item
+                if not self._sse_send(event_type, data):
+                    if cancel is not None:
+                        cancel.set()
+                    return
+
+        # ---- routing ----
+        def do_GET(self):
+            parsed = _urlparse(self.path)
+            path = parsed.path
+            if path in ("/", ""):
+                return self._serve_static("/index.html")
+            if path == "/api/search":
+                return self._api_search(parse_qs(parsed.query))
+            if path.startswith("/api/board/"):
+                return self._api_board(path[len("/api/board/"):])
+            return self._serve_static(path)
+
+        def do_POST(self):
+            if _urlparse(self.path).path == "/api/download":
+                return self._api_download()
+            self._send_json({"error": "not found"}, status=404)
+
+        # ---- static files (path-traversal hardened) ----
+        def _serve_static(self, urlpath):
+            rel = _unquote(urlpath).lstrip("/")
+            candidate = os.path.realpath(os.path.join(web_root, rel))
+            try:
+                inside = os.path.commonpath([web_root, candidate]) == web_root
+            except ValueError:
+                inside = False
+            if not inside or not os.path.isfile(candidate):
+                self._send_json({"error": "not found"}, status=404)
+                return
+            ext = os.path.splitext(candidate)[1].lower()
+            try:
+                with open(candidate, "rb") as f:
+                    body = f.read()
+            except OSError:
+                self._send_json({"error": "not found"}, status=404)
+                return
+            self._send_bytes(body, CONTENT_TYPES.get(ext, "application/octet-stream"))
+
+        # ---- GET /api/search (SSE) ----
+        def _api_search(self, qs):
+            def first(name, default=None):
+                v = qs.get(name)
+                return v[0] if v else default
+
+            try:
+                query = (first("q", "") or "").strip()
+                if not query:
+                    self._send_json({"error": "missing q"}, status=400)
+                    return
+                max_results = int(first("max", "20"))
+                min_views = int(first("min_views", "0"))
+                min_sounds = int(first("min_sounds", "0"))
+                sort_by = first("sort", "views")
+                if sort_by not in ("views", "recent"):
+                    self._send_json({"error": "bad sort"}, status=400)
+                    return
+                include_dates = (first("include_dates", "0") in ("1", "true", "yes"))
+                rd = first("recent_days")
+                recent_days = int(rd) if rd not in (None, "") else None
+                date_sample_size = int(first("date_sample_size", "0"))
+            except ValueError:
+                self._send_json({"error": "bad params"}, status=400)
+                return
+
+            if recent_days is not None or sort_by == "recent":
+                include_dates = True
+
+            if not job_sem.acquire(blocking=False):
+                self._start_sse()
+                self._sse_send("busy", {"message": "server busy, try again"})
+                return
+            try:
+                self._start_sse()
+                q = _queue.Queue()  # unbounded: a disconnected search finishes in bg
+                sentinel = object()
+
+                class _Sink:
+                    def event(self, event_type, **fields):
+                        q.put((event_type, fields))
+
+                def worker():
+                    try:
+                        results = search_boards(
+                            query, max_results, False, min_views, min_sounds,
+                            include_dates=include_dates, recent_days=recent_days,
+                            sort_by=sort_by, date_sample_size=date_sample_size,
+                            progress=False, verbose=False, logger=_Sink(), render=False,
+                        )
+                        q.put(("results", [board_result_to_dict(b) for b in results]))
+                    except Exception as e:
+                        q.put(("error", {"message": str(e)}))
+                    finally:
+                        q.put(sentinel)
+
+                threading.Thread(target=worker, daemon=True).start()
+                self._pump(q, sentinel)  # no cancel seam for search (bounded by max)
+            finally:
+                job_sem.release()
+
+        # ---- POST /api/download (SSE) ----
+        def _api_download(self):
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+            except ValueError:
+                length = 0
+            raw = self.rfile.read(length) if length else b""
+            try:
+                body = _json.loads(raw.decode("utf-8")) if raw else {}
+            except Exception:
+                self._send_json({"error": "bad json"}, status=400)
+                return
+            board = (body.get("board") or "").strip()
+            if not valid_board(board):
+                self._send_json({"error": "bad board"}, status=400)
+                return
+
+            root = server_root
+            req_root = body.get("download_root")
+            if req_root:
+                cand = os.path.realpath(os.path.expanduser(os.path.abspath(req_root)))
+                try:
+                    if os.path.commonpath([server_root, cand]) != server_root:
+                        self._send_json({"error": "download_root escapes server root"}, status=400)
+                        return
+                except ValueError:
+                    self._send_json({"error": "bad download_root"}, status=400)
+                    return
+                root = cand
+
+            if not job_sem.acquire(blocking=False):
+                self._start_sse()
+                self._sse_send("busy", {"message": "server busy, try again"})
+                return
+            try:
+                self._start_sse()
+                q = _queue.Queue()
+                sentinel = object()
+                cancel = threading.Event()
+
+                def cb(event_type, **fields):
+                    q.put((event_type, fields))
+
+                def worker():
+                    try:
+                        board_url = "%s/sb/%s" % (BASE_URL, _quote_path_segment(board))
+                        tool = SoundboardSnag(board_url, download_root=root, event_cb=cb,
+                                              render=False, cancel_event=cancel)
+                        tool.snag()
+                    except Exception as e:
+                        q.put(("download_error", {"error": str(e)}))
+                    finally:
+                        q.put(sentinel)
+
+                threading.Thread(target=worker, daemon=True).start()
+                self._pump(q, sentinel, cancel=cancel)
+            finally:
+                job_sem.release()
+
+        # ---- GET /api/board/<board> (JSON) ----
+        def _api_board(self, raw_id):
+            board = _unquote(raw_id).strip()
+            if not valid_board(board):
+                self._send_json({"error": "bad board"}, status=400)
+                return
+            if not job_sem.acquire(blocking=False):
+                self._send_json({"error": "busy"}, status=503)
+                return
+            try:
+                board_url = "%s/sb/%s" % (BASE_URL, _quote_path_segment(board))
+                tool = SoundboardSnag(board_url, download_root=server_root)
+                html_content = tool._fetch_page()
+                has_downloads, _count = tool._check_downloads_enabled(html_content)
+                items = tool._parse_sound_items(html_content)
+                self._send_json({
+                    "board": board,
+                    "has_downloads": bool(has_downloads),
+                    "total_count": len(items),
+                    "sounds": [{"id": sid, "title": title} for sid, title in items],
+                    "error": None,
+                })
+            except Exception as e:
+                self._send_json({
+                    "board": board, "has_downloads": False, "total_count": 0,
+                    "sounds": [], "error": str(e),
+                })
+            finally:
+                job_sem.release()
+
+    httpd = ThreadingHTTPServer((host, port), Handler)
+    url = "http://%s:%d" % (host, port)
+    print(f"{Colors.BOLD}{Colors.CYAN}soundboard-snag{Colors.RESET}  web UI  →  {Colors.GREEN}{url}{Colors.RESET}")
+    print(f"{Colors.GRAY}  serving assets from {web_root}{Colors.RESET}")
+    print(f"{Colors.GRAY}  downloads save under {server_root}{Colors.RESET}")
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"{Colors.YELLOW}  warning: bound to {host} — anyone on the network can trigger downloads.{Colors.RESET}")
+    print(f"{Colors.GRAY}  press Ctrl+C to stop.{Colors.RESET}")
+    emit_log("server_start", host=host, port=port, web_root=web_root, download_root=server_root)
+    try:
+        httpd.serve_forever()
+    finally:
+        httpd.server_close()
+
 
 def main():
     """Command-line interface."""
@@ -1570,6 +2006,30 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
         help="Root directory for downloads (default: current working directory). "
              "A subfolder with the board name will be created inside this directory."
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="With --search, print results as a JSON array to stdout (for automation); "
+             "suppresses the human-readable rendering."
+    )
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Start a local web UI / JSON+SSE API instead of running a one-shot command."
+    )
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="Host/interface for --serve (default: 127.0.0.1, localhost only). "
+             "Use 0.0.0.0 to expose on your network (lets others trigger downloads)."
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Port for --serve (default: 8765)."
+    )
 
 
     args = parser.parse_args()
@@ -1600,6 +2060,18 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
             except OSError as e:
                 print(f"{Colors.RED}Error creating download root directory: {e}{Colors.RESET}")
                 sys.exit(1)
+
+    # Web UI mode: short-circuit before the one-shot CLI dispatch, but after the
+    # shared download_root resolution above so the server's root already exists.
+    if getattr(args, "serve", False):
+        try:
+            run_server(args.host, args.port, download_root, logger=run_logger)
+        except KeyboardInterrupt:
+            print("\nServer stopped.")
+        finally:
+            if run_logger:
+                run_logger.close()
+        sys.exit(0)
 
     # Handle search-and-download mode
     if args.search_and_download:
@@ -1680,7 +2152,7 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
     # Handle search mode
     if args.search:
         try:
-            search_boards(
+            results = search_boards(
                 args.search,
                 args.max,
                 args.debug,
@@ -1693,7 +2165,11 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
                 progress=getattr(args, "progress", True),
                 verbose=getattr(args, "verbose", False),
                 logger=run_logger,
+                render=not getattr(args, "json", False),
             )
+            if getattr(args, "json", False):
+                json.dump([board_result_to_dict(b) for b in results], sys.stdout, ensure_ascii=False)
+                sys.stdout.write("\n")
             sys.exit(0)
         except KeyboardInterrupt:
             print("\n\nSearch cancelled by user.")

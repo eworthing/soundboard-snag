@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <!--
+    viewport: width=device-width keeps layout correct on mobile.
+    initial-scale=1 is required. We never set user-scalable=no — that would
+    violate WCAG 1.4.4 and the brief's explicit "never disable zoom" rule.
+  -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Soundboard Snag</title>
+
+  <!--
+    Google Fonts — Archivo Expanded (display), IBM Plex Sans (body), IBM Plex Mono (utility).
+    font-display:swap is set via the URL param so the UI renders immediately with
+    system fallbacks if the CDN is unavailable (offline / blocked).
+    The full system fallback stack in styles.css makes the UI fully usable without these.
+  -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Archivo+Expanded:wght@700;800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  >
+
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       DEVICE HEADER
+       Brand name, power LED, server address.
+       The LED is an SVG — color is never the sole signal (it also
+       has an aria-label on its wrapper). The address updates from
+       window.location.host in app.js.
+       ═══════════════════════════════════════════════════════════ -->
+  <header class="device-header" role="banner">
+    <div class="device-header__inner">
+
+      <div class="device-header__brand">
+        <!-- 2×2 sampler-pad grid icon — represents the rack concept -->
+        <svg
+          class="device-header__icon"
+          width="20" height="20" viewBox="0 0 20 20"
+          fill="none" aria-hidden="true" focusable="false"
+        >
+          <rect x="1"  y="1"  width="7" height="7" rx="1.5" fill="currentColor" opacity="0.9"/>
+          <rect x="12" y="1"  width="7" height="7" rx="1.5" fill="currentColor" opacity="0.55"/>
+          <rect x="1"  y="12" width="7" height="7" rx="1.5" fill="currentColor" opacity="0.55"/>
+          <rect x="12" y="12" width="7" height="7" rx="1.5" fill="currentColor" opacity="0.9"/>
+        </svg>
+        <span class="device-header__name">SOUNDBOARD·SNAG</span>
+      </div>
+
+      <div class="device-header__meta">
+        <!-- Power LED — SVG circle with aria-label on wrapper for screen readers -->
+        <span class="device-header__led-wrap" aria-label="Power on">
+          <svg
+            class="device-header__led"
+            id="power-led"
+            width="10" height="10" viewBox="0 0 10 10"
+            aria-hidden="true" focusable="false"
+          >
+            <circle cx="5" cy="5" r="4" fill="var(--led-amber)"/>
+          </svg>
+        </span>
+        <!-- Fallback address shown before JS runs; JS updates to window.location.host -->
+        <span class="device-header__address" id="server-address">v · 127.0.0.1:8765</span>
+      </div>
+
+    </div>
+  </header>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       MAIN RACK SHELL
+       ═══════════════════════════════════════════════════════════ -->
+  <main class="rack-shell">
+
+    <!-- ─────────────────────────────────────────────────────────
+         COMMAND BAR — backlit LCD search + GRAB submit
+         ───────────────────────────────────────────────────────── -->
+    <section class="command-bar" id="command-bar" aria-label="Search soundboards">
+      <form class="command-bar__form" id="search-form" role="search" novalidate>
+
+        <!-- "SEARCH" label uses faceplate styling (cream label tape) -->
+        <span class="command-bar__label" aria-hidden="true">SEARCH</span>
+
+        <label for="search-input" class="sr-only">Search soundboards</label>
+        <input
+          type="search"
+          id="search-input"
+          class="command-bar__input"
+          placeholder='search soundboards — try "star wars"'
+          autocomplete="off"
+          spellcheck="false"
+          aria-label="Search soundboards"
+          aria-required="true"
+        >
+
+        <!-- GRAB = the search submit button (loading state swaps label → spinner) -->
+        <button
+          type="submit"
+          class="btn btn--primary command-bar__submit"
+          id="search-btn"
+          aria-label="Search"
+        >
+          <span class="grab-label">GRAB</span>
+          <!-- Inline spinner SVG — shown only while searching -->
+          <svg
+            class="grab-spinner"
+            width="16" height="16" viewBox="0 0 16 16"
+            aria-hidden="true" focusable="false"
+          >
+            <circle
+              cx="8" cy="8" r="5.5"
+              stroke="currentColor" stroke-width="2.5" fill="none"
+              stroke-dasharray="22" stroke-dashoffset="8"
+            />
+          </svg>
+        </button>
+
+      </form>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────
+         CONTROL STRIP — CLI flag controls
+         Each control has an explicit <label> (not placeholder-only).
+         ───────────────────────────────────────────────────────── -->
+    <section class="control-strip" aria-label="Search filters">
+      <div class="control-strip__inner">
+
+        <div class="control-strip__field">
+          <label for="min-views" class="control-strip__label">min-views</label>
+          <input
+            type="number"
+            id="min-views"
+            class="control-strip__input"
+            value="10"
+            placeholder="0"
+            min="0"
+            step="1"
+            aria-label="Minimum views"
+          >
+        </div>
+
+        <div class="control-strip__field">
+          <label for="min-sounds" class="control-strip__label">min-sounds</label>
+          <input
+            type="number"
+            id="min-sounds"
+            class="control-strip__input"
+            value="3"
+            placeholder="0"
+            min="0"
+            step="1"
+            aria-label="Minimum sounds per board"
+          >
+        </div>
+
+        <div class="control-strip__field">
+          <label for="max-results" class="control-strip__label">max</label>
+          <input
+            type="number"
+            id="max-results"
+            class="control-strip__input"
+            value="20"
+            min="1"
+            max="200"
+            step="1"
+            aria-label="Maximum number of results"
+          >
+        </div>
+
+        <div class="control-strip__field">
+          <label for="sort-order" class="control-strip__label">sort</label>
+          <select
+            id="sort-order"
+            class="control-strip__select"
+            aria-label="Sort order"
+          >
+            <option value="views">views</option>
+            <option value="recent">recent</option>
+          </select>
+        </div>
+
+        <label class="control-strip__toggle">
+          <input type="checkbox" id="include-dates" aria-label="Fetch approximate update dates">
+          <span class="control-strip__toggle-label">include-dates</span>
+        </label>
+
+        <label class="control-strip__toggle">
+          <input type="checkbox" id="recent-only" aria-label="Filter to recently updated boards">
+          <span class="control-strip__toggle-label">recent-only</span>
+        </label>
+
+        <!-- Shown only when recent-only is checked -->
+        <div class="control-strip__field" id="recent-days-wrap" hidden>
+          <label for="recent-days" class="control-strip__label">recent-days</label>
+          <input
+            type="number"
+            id="recent-days"
+            class="control-strip__input"
+            value="30"
+            min="1"
+            step="1"
+            aria-label="Number of days for recent filter"
+          >
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────
+         CLI MIRROR — SIGNATURE ELEMENT
+         Always shows the exact equivalent CLI command for the current
+         control state. Copy button puts it on the clipboard.
+         Reverse input: paste a soundboard-snag.py … command and
+         the controls update to match.
+         ───────────────────────────────────────────────────────── -->
+    <section class="cli-mirror" aria-label="CLI command equivalent">
+
+      <div class="cli-mirror__display">
+        <!-- $ prompt is decorative; aria-hidden -->
+        <span class="cli-mirror__dollar" aria-hidden="true">$</span>
+
+        <!--
+          aria-live="polite" so screen readers announce updates without
+          interrupting other speech. The full command string is readable.
+        -->
+        <code
+          class="cli-mirror__command"
+          id="cli-command"
+          aria-live="polite"
+          aria-label="Current CLI command"
+        >soundboard-snag.py</code>
+
+        <!-- Copy button — inline SVG clipboard icon -->
+        <button
+          type="button"
+          class="cli-mirror__copy"
+          id="copy-cmd"
+          aria-label="Copy command to clipboard"
+          title="Copy"
+        >
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true" focusable="false">
+            <rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
+            <path
+              d="M3.5 10H2.75A1.25 1.25 0 0 1 1.5 8.75V2.75A1.25 1.25 0 0 1 2.75 1.5h6A1.25 1.25 0 0 1 10 2.75V3.5"
+              stroke="currentColor" stroke-width="1.3"
+            />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Reverse mode: paste a CLI command to set controls -->
+      <div class="cli-mirror__reverse">
+        <label for="cli-paste" class="cli-mirror__reverse-label">paste:</label>
+        <input
+          type="text"
+          id="cli-paste"
+          class="cli-mirror__reverse-input"
+          placeholder="soundboard-snag.py --search &quot;…&quot;  — paste to set controls"
+          spellcheck="false"
+          autocomplete="off"
+          aria-label="Paste a CLI command to set the controls above"
+        >
+      </div>
+
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────
+         RACK — VU activity readout + responsive pad grid
+         ───────────────────────────────────────────────────────── -->
+    <section class="rack" id="rack" aria-label="Search results">
+
+      <div class="rack__header">
+        <!-- Label tape -->
+        <h2 class="rack__title">RACK</h2>
+
+        <!--
+          VU meter — pure delight; aria-hidden. 8 bars that animate
+          during search via CSS triggered by .rack.is-searching.
+          The load-bearing progress indicator is the text #rack-count.
+        -->
+        <div
+          class="rack__vu"
+          id="vu-meter"
+          aria-hidden="true"
+          role="presentation"
+        >
+          <div class="vu-bar"></div>
+          <div class="vu-bar"></div>
+          <div class="vu-bar"></div>
+          <div class="vu-bar"></div>
+          <div class="vu-bar"></div>
+          <div class="vu-bar"></div>
+          <div class="vu-bar"></div>
+          <div class="vu-bar"></div>
+        </div>
+
+        <!-- Numeric progress — the load-bearing readout (e.g. "12 / 20 scanned") -->
+        <span
+          class="rack__count"
+          id="rack-count"
+          aria-live="polite"
+          aria-atomic="true"
+        ></span>
+
+        <!-- Status text — empty/searching/error messages -->
+        <span
+          class="rack__status"
+          id="rack-status"
+          aria-live="polite"
+          aria-atomic="true"
+        ></span>
+      </div>
+
+      <!--
+        Pad grid — role=list so screen readers announce item count.
+        Individual pads get role="listitem" from JS.
+      -->
+      <div class="pad-grid" id="pad-grid" role="list" aria-label="Soundboard results"></div>
+
+      <!-- Empty state — shown before any search and when results are empty -->
+      <div class="rack__empty" id="rack-empty">
+        <p>Nothing loaded yet. Search a phrase to fill the rack.</p>
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       TOAST CONTAINER
+       aria-live="polite" means toasts are announced without
+       interrupting current speech. role="status" is redundant
+       but reinforces semantics for older AT.
+       Toasts must never steal focus (they don't — they're appended
+       outside the main tab order).
+       ═══════════════════════════════════════════════════════════ -->
+  <div
+    class="toast-container"
+    id="toast-container"
+    role="status"
+    aria-live="polite"
+    aria-atomic="false"
+  ></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

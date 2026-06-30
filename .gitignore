@@ -37,6 +37,7 @@ env/
 # Downloaded soundboards (example directories)
 */
 !.github/
+!web/
 
 # But keep the script
 !soundboard-snag.py
