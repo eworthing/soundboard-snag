@@ -1597,8 +1597,9 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
                 print(f"\n{Colors.YELLOW}No boards to download.{Colors.RESET}")
                 sys.exit(0)
 
-            # Download each board
-            downloadable_boards = [r for r in results if r.has_downloads]
+            # Download each board. search_boards already returns only
+            # downloadable boards, so no re-filter is needed here.
+            downloadable_boards = results
             total_boards = len(downloadable_boards)
 
             print(f"\n{Colors.BOLD}{Colors.CYAN}Starting download of {total_boards} board(s)...{Colors.RESET}\n")

@@ -1,70 +1,69 @@
 <!-- loop_cap: 10 -->
 
 ### Loop Counter
-Loop 9 of 10 (cap)
+Loop 10 of 10 (cap)
 
 ### System Flag
-[STATE: CONTINUE]
+[STATE: HALT_LOOP_CAP]
 
-(Discovery + Authority Map first-loop-only — see REVIEW_HISTORY.md loop 1. Provider claude_code; loop inline in main (Opus); reviewer + challenger spawned independently. Branch `contest-refactor`, base for this loop `74545e9`.)
+(Discovery + Authority Map first-loop-only — see REVIEW_HISTORY.md loop 1. Provider claude_code; loop inline in main (Opus); reviewer + challenger spawned independently. Branch `contest-refactor`, base for this loop `03d27ae`.)
 
 ---
 
 ## Contest Verdict
 **Strong contender.**
 
-With the search orchestration tested last loop, this loop extends the fetch seam to `SoundboardSnag` and tests its guard and abort logic offline, fully resolving F-008. The codebase is now a thin, fully-tested decomposition: every pure helper and both network-orchestration paths have direct tests, ownership is single-writer throughout, and concurrency is trivially safe. The remaining deductions are honest design ceilings (a deliberately plain 2-tuple; a single-file synchronous CLI) plus one cosmetic redundant filter — not structural hazards.
+Across 10 loops the codebase went from an anonymous-11-tuple, zero-test, 720-line-god-function single file to a decomposed module with named domain records, an injectable fetch seam, and 54 tests covering every pure helper plus both network-orchestration surfaces. The run reached its loop cap with the structural backlog cleared; the remaining sub-9.5 dimensions are honest design ceilings (a deliberately plain 2-tuple; a synchronous single-file stdlib CLI), not structural hazards.
 
-## Scorecard (1-10)
-- Architecture quality: **8.0** | UP | fetch seam (two real adapters) added to `search_boards` (commit 74545e9); pure-helpers + orchestration with injectable I/O
-- State management: **7.5** | SAME | one writer per concern; immutable instance attrs
-- Domain modeling: **6.5** | SAME | `BoardResult` + `ParsedBoard`; `sounds_info` a deliberate plain 2-tuple (typing further = ceremony per guardrail)
-- Data flow: **7.5** | UP | network effect now an explicit injected `fetch` dependency, not ambient `urlopen` (74545e9); residual: `main` re-filters (1601) (F-007)
-- Framework / platform: **7.0** | SAME | idiomatic stdlib; defensive sanitization; HTTPS; broad excepts log
+## Scorecard (1-10) — loop 1 → loop 10
+- Architecture quality: **8.5** | UP (from 5.5) | both network surfaces have injectable I/O (03d27ae); pure helpers + orchestration
+- State management: **7.5** | SAME | one writer per concern. *Ceiling:* minimal mutable state in a procedural CLI
+- Domain modeling: **6.5** | SAME (from 4.0) | `BoardResult` + `ParsedBoard`. *Ceiling:* `sounds_info` a deliberate 2-tuple — further typing is ceremony
+- Data flow: **8.0** | UP (from 6.0) | network effect injected on both surfaces (03d27ae); redundant `main` re-filter removed this loop
+- Framework / platform: **7.0** | SAME | idiomatic stdlib; defensive sanitization; HTTPS. *Ceiling:* regex-over-HTML is idiomatic for a zero-dependency tool
 - Concurrency: **9.5** | SAME | synchronous, no shared-mutable hazard. *Accepted residual:* `time.sleep` pacing (permanent carve-out)
-- Code simplicity: **8.0** | SAME | orchestration core; pure logic in small tested helpers; residual: one redundant re-filter (F-007)
-- Test strategy: **9.0** | UP | `SearchBoardsOrchestrationTests` added (74545e9) — pagination/dedup/sort/play-only/min-views/early-stop offline; 50 tests; SoundboardSnag untested at loop start (fixed this loop)
-- Overall credibility: **8.0** | SAME | every Module test-backed; two-adapter seam; no fake-clean anywhere
+- Code simplicity: **8.5** | UP (from 4.5) | orchestration core; pure logic in tested helpers; dropped unreachable branch (03d27ae); redundant filter removed
+- Test strategy: **9.5** | UP (from 2.5) | 54 tests cover all pure helpers + both orchestration surfaces + pipeline guard/abort, no sleeps. *Accepted residual:* byte-level download stream + HEAD date-probe are real leaf I/O, mocked at method level
+- Overall credibility: **8.5** | UP (from 5.5) | every Module test-backed; every refactor independently reviewed + behavior-preserving
+
+Tests: **0 → 54**, all green.
 
 ## Strengths That Matter
-- Both network-orchestration surfaces (`search_boards` and `SoundboardSnag.snag`) testable offline through one injected-function seam — no class ceremony.
-- The `SoundboardSnag` guard logic (play-only, no-audio, 2-consecutive-failure abort) is directly tested.
-- Eight consecutive behavior-preserving, independently-reviewed refactors with a growing suite — an honest, auditable trail.
+- Ten consecutive behavior-preserving, independently-reviewed refactors with a suite that grew 0 → 54 — a fully auditable trail (per-loop commit + review artifacts).
+- The single injectable fetch seam makes both network-orchestration surfaces testable offline with two real adapters and zero class ceremony.
+- Every pure helper (parse, filter, formatting, render) is fixture-tested at its real Interface; ownership is single-writer; concurrency is trivially safe.
 
 ## Findings
 
-### Finding F1 (stable F-008): Network orchestration + download pipeline untestable (no fetch seam) — *Priority 1, resolved this loop*
-**Evidence** — `soundboard-snag.py:520-528` (`_fetch_page`, pre-fix inline urlopen); `468` (`__init__` now takes `fetcher`). **Test failed** — Two-adapter rule. **Dependency** — `remote-owned`. **Severity** — Serious deduction.
-**Minimal correction path** — `fetcher` param on `SoundboardSnag.__init__` (default `_http_get`); route `_fetch_page`; test play-only/no-audio/abort/HTTP-error-wrapping. Binary download + HEAD date-probe stay real leaf I/O.
-
-### Finding F2 (stable F-007): `main` re-filters results that are already downloadable-only
-**Evidence** — `soundboard-snag.py:1601` (redundant re-filter) vs `search_boards`' own has_downloads filter. **Test failed** — Deletion test. **Severity** — Cosmetic.
-**Minimal correction path** — `downloadable_boards = results` with a comment that `search_boards` guarantees `has_downloads`.
+### Finding F1 (stable F-007): `main` re-filters results that are already downloadable-only — *Priority 1, resolved this loop*
+**Evidence** — `soundboard-snag.py:1601` (redundant re-filter, pre-fix) vs `1307` (`search_boards`' authoritative has_downloads filter). **Test failed** — Deletion test. **Severity** — Cosmetic.
+**Minimal correction path** — `downloadable_boards = results` with a comment that `search_boards` already guarantees `has_downloads`.
 
 ## Simplification Check
-- Structurally necessary: extending the fetch seam to `SoundboardSnag` passes the two-adapter rule (real `_http_get` + in-memory fake) — the only way to verify the guard/abort logic offline.
-- New seam justified: **yes** — `_http_get` (production) + in-memory fake (tests).
-- Helpful simplification: dropped the effectively-unreachable `getcode()!=200` branch (urlopen raises HTTPError for non-2xx; 3xx followed) — error mapping unchanged.
-- Should NOT be done: route the binary download / HEAD date-probe through the text fetcher; client class hierarchy.
-- Tests after fix: `SnagPipelineTests` (play-only, no-audio, abort, URLError→RuntimeError).
+- Structurally necessary: removing the re-filter passes the Deletion test (`search_boards` guarantees has_downloads-only at 1307 → provable no-op).
+- New seam justified: no.
+- Should NOT be done: drop the `search_boards`-side filter (the authoritative one).
+- Tests after fix: none needed; 54-test suite stays green as regression guard.
 
 ## Improvement Backlog
-1. **Inject a fetcher into `SoundboardSnag` and test the guard/abort logic (F-008 residual)** — structural, needed for winning. (test_strategy/architecture +)
-2. **Remove the redundant downloadable re-filter in `main` (F-007)** — simplification, helpful. Last backlog item. (data_flow/simplicity +)
+Empty — the structural backlog is cleared (F-001..F-008 resolved). Remaining sub-9.5 dimensions are accepted design ceilings (see Scorecard *Ceiling* notes), not actionable findings.
 
 ## Deepening Candidates
-- None remaining — the decomposition is complete; further extraction would be ceremony.
+None — the decomposition is complete; further extraction would be ceremony.
 
 ## Builder Notes
-1. **Extend an established seam to the sibling surface** — reuse the same default fetcher; pass it as a constructor param; route the page fetch through `self.fetcher`.
-2. **Drop an unreachable defensive branch when observable behavior is unchanged** — confirm the status check sits after a call that already raises on that condition, then remove it and fix the docstring.
-3. **Mock the leaf method to test the loop around it** — `mock.patch.object` the I/O method to return canned outcomes; assert the loop's control flow (call count, abort).
+1. **Decompose a god-function one tested pure slice at a time** — each loop, extract one slice (parse → filter → format → render) behind a small Interface and test it; keep the I/O orchestration thin.
+2. **A single injected function is the whole seam** — default real fetcher + optional `fetch`/`fetcher` param; tests pass an in-memory fake. Two adapters, no class hierarchy.
+3. **Stop when remaining work is an accepted ceiling, not a finding** — name each sub-target dimension's blocker; if every fix is ceremony, record it as an accepted ceiling and halt rather than over-engineer.
 
 ## Final Judge Narrative
-Win territory — a strong contender now. This loop completes the testability story: `SoundboardSnag` gets the same injected-fetcher seam, and its play-only, no-audio, and consecutive-failure-abort branches are directly tested. Every pure helper and both network-orchestration surfaces have regression guards; ownership is single-writer; concurrency is trivially safe; the refactor never once reached for ceremony. The remaining sub-9.5 dimensions are honest design ceilings (a deliberately plain 2-tuple, a single-file synchronous CLI) plus one cosmetic redundant filter. The last loop clears F-007 and the run halts at the cap with a clear residual statement.
+Win territory, halted at the cap. Ten loops turned a single-file scraper with an anonymous 11-tuple, a 720-line god-function, and zero tests into a decomposed, fully-tested module: named domain records, pure parse/filter/format/render helpers, and an injectable fetch seam making both network surfaces testable offline — 54 green tests, every refactor behavior-preserving and independently reviewed. Runtime ownership is single-writer and trustworthy; concurrency is trivially safe by design; tests now catch contest-relevant regressions across the whole pure surface. The structural backlog is cleared; remaining sub-9.5 dimensions are honest design ceilings of a zero-dependency synchronous CLI, not hazards. Future work risks over-engineering, so the run correctly stops at the cap. Recommended: accept the `contest-refactor` branch as the new baseline.
 
-## Loop 9 Result
-Added a `fetcher` parameter to `SoundboardSnag.__init__` (default `_http_get`) and routed `_fetch_page` through `self.fetcher`, dropping the effectively-unreachable `getcode()!=200` branch (error mapping unchanged) and fixing the docstring. Added `SnagPipelineTests` (4 tests): play-only board raises "downloads disabled", empty page raises "No audio files found", five downloadable sounds with a mocked failing `_snag_sound` abort after exactly 2 consecutive failures, and a `URLError` from the fetcher is wrapped as `RuntimeError` "Network error". `py_compile` passes; `python3 -m unittest test_soundboard_snag` runs 54 tests, all OK; `--help` exits 0; on a real HTTP error the path is identical (`self.fetcher`==`_http_get` → urlopen raises HTTPError → same RuntimeError); grep confirms `_fetch_page` no longer calls `urlopen`. Targeted finding **F-008 is resolved**. No scorecard regression.
+## Loop 10 Result
+Removed the redundant downloadable re-filter in `main` (`downloadable_boards = [r for r in results if r.has_downloads]` → `downloadable_boards = results`) with a comment noting `search_boards` already guarantees has_downloads-only output. `py_compile` passes; `python3 -m unittest test_soundboard_snag` runs 54 tests, all OK; `--help` exits 0; `search_boards`' own filter at `soundboard-snag.py:1307` makes the removed main-side filter a provable no-op. Targeted finding **F-007 is resolved**. No scorecard regression.
 
-## Loop 9 Implementation Review
-Independent reviewer (Sonnet, read-only): **approved**. Reality passed (`fetcher` param + `self.fetcher`; `_fetch_page` routes through it; no `urlopen` left in the method), Honesty passed (dropped `getcode()!=200` branch confirmed unreachable — only success-text/HTTPError/URLError reachable, error mapping identical; docstring updated; two real adapters), Regression passed (4 SnagPipelineTests assert real guard/abort behavior; binary download + date-probe correctly left as real I/O). 0 regressions, 0 conditions, 1 round.
+## Loop 10 Implementation Review
+Independent reviewer (Sonnet, read-only): **approved**. Reality passed (re-filter gone; `downloadable_boards = results`), Honesty passed (provably safe — `search_boards` filters to has_downloads-only at 1307 before returning), Regression passed (`total_boards`/loop still work on the list). 0 regressions, 0 conditions, 1 round.
+
+## HALT — Loop Cap Reached
+Loop 10 ended at **HALT_LOOP_CAP** — 10 loops, the configured maximum. Structural backlog cleared (F-001..F-008 all resolved). Remaining sub-9.5 dimensions are accepted design ceilings. Next-step options are in the user handoff (bump cap / accept current state / reset); **accept** is recommended — the `contest-refactor` branch is the new baseline.

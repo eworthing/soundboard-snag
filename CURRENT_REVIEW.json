@@ -1,11 +1,14 @@
 {
   "schema_version": 4,
-  "loop": 9,
+  "loop": 10,
   "loop_cap": 10,
-  "state": "CONTINUE",
+  "state": "HALT_LOOP_CAP",
   "halt_subtype": null,
   "halt_handoff_text": null,
-  "halt_handoff": null,
+  "halt_handoff": {
+    "text": "Loop 10 ended at HALT_LOOP_CAP — I made 10 loops, the configured maximum.\n\nProgress so far (loop 1 -> loop 10 scorecard): architecture 5.5->8.5, domain modeling 4.0->6.5, data flow 6.0->8.0, code simplicity 4.5->8.5, test strategy 2.5->9.5, credibility 5.5->8.5; concurrency held at 9.5 (accepted, synchronous), state management held at 7.5, framework idioms held at 7.0. Tests: 0 -> 54, all green. The 1654-line single-file CLI is now a decomposed, fully-tested module: BoardResult/ParsedBoard named records, pure _parse_board_html / _evaluate_filters / format + render helpers, and an injectable fetch seam that makes both the search orchestration and the SoundboardSnag download pipeline testable offline.\n\nCurrent Priority 1 (carried forward): none — the structural backlog is cleared. F-001..F-008 are all resolved. The remaining sub-9.5 dimensions are accepted design ceilings, not actionable findings: domain modeling (sounds_info is a deliberate (id,title) 2-tuple; typing it further is ceremony the rubric warns against), framework idioms and state management (a synchronous single-file stdlib CLI has little more structure to earn), and a test-strategy residual (the byte-level download stream and the HEAD date-probe remain real leaf I/O, mocked at the method level rather than the byte level).\n\nNext step options:\n  (a) Bump cap and resume — \"/contest-refactor --cap 15\" continues from here, but expect diminishing returns: the remaining items are accepted ceilings and pushing them risks over-engineering.\n  (b) Accept current state (recommended) — 10 loops landed substantial, independently-reviewed, behavior-preserving improvements; the contest-refactor branch is the new baseline. Merge it to main when ready.\n  (c) Reset — \"/contest-refactor --reset\".",
+    "expected_actions": []
+  },
   "re_validated_at_sha": null,
   "re_validation_context": null,
   "dry_run": false,
@@ -29,128 +32,106 @@
   "discovery": null,
 
   "verdict": "Strong contender",
-  "verdict_explanation": "With the search orchestration tested last loop, this loop extends the fetch seam to SoundboardSnag and tests its guard and abort logic offline, fully resolving F-008. The codebase is now a thin, fully-tested decomposition: every pure helper and both network-orchestration paths have direct tests, ownership is single-writer throughout, and concurrency is trivially safe. The remaining deductions are honest design ceilings (domain modeling of a 2-tuple, a single-file synchronous CLI) plus one cosmetic redundant filter, not structural hazards.",
+  "verdict_explanation": "Across 10 loops the codebase went from an anonymous-11-tuple, zero-test, 720-line-god-function single file to a decomposed module with named domain records, an injectable fetch seam, and 54 tests covering every pure helper plus both network-orchestration surfaces. The run reached its loop cap with the structural backlog cleared; the remaining sub-9.5 dimensions are honest design ceilings (a deliberately plain 2-tuple; a synchronous single-file stdlib CLI), not structural hazards.",
 
   "scorecard": {
-    "architecture_quality":      {"score": 8.0, "delta": "UP", "proof": "fetch seam added to search_boards with two real adapters (commit 74545e9); the module graph is now pure-helpers + orchestration with injectable I/O. Residual: SoundboardSnag pipeline lacked a seam at loop start (fixed this loop)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
-    "state_management":          {"score": 7.5, "delta": "SAME", "proof": "single-threaded; one writer per concern; SoundboardSnag attrs immutable post-__init__", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
-    "domain_modeling":           {"score": 6.5, "delta": "SAME", "proof": "BoardResult + ParsedBoard name the records; sounds_info is a deliberate plain (id,title) 2-tuple — typing it further would be ceremony the rubric warns against (state/domain guardrail)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
-    "data_flow":                 {"score": 7.5, "delta": "UP", "proof": "network effect is now an explicit injected fetch dependency rather than ambient urlopen (commit 74545e9). Residual: main re-filters results (soundboard-snag.py:1601) duplicating search_boards' guarantee (F-007)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
-    "framework_idioms":          {"score": 7.0, "delta": "SAME", "proof": "idiomatic stdlib; defensive sanitization; HTTPS; no secrets; broad except blocks log their errors", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
+    "architecture_quality":      {"score": 8.5, "delta": "UP", "proof": "SoundboardSnag fetch seam added (commit 03d27ae); both network surfaces have injectable I/O; pure helpers + orchestration only. Residual: a single-file module by design (no package split warranted)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
+    "state_management":          {"score": 7.5, "delta": "SAME", "proof": "single-threaded; one writer per concern; immutable instance attrs. Blocker for 9.5: a procedural CLI has minimal mutable state — no further structural ownership gain is available without inventing state that is not needed (accepted ceiling, not a backlog item)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
+    "domain_modeling":           {"score": 6.5, "delta": "SAME", "proof": "BoardResult + ParsedBoard name the records. Blocker for 9.5: sounds_info is a deliberate (id,title) 2-tuple and approx_source has two values — typing these further is ceremony the state/domain guardrail warns against (accepted ceiling, not a backlog item)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
+    "data_flow":                 {"score": 8.0, "delta": "UP", "proof": "network effect is an explicit injected fetch dependency on both surfaces (commit 03d27ae); the redundant main re-filter was removed this loop. No back-channels; constants are config", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
+    "framework_idioms":          {"score": 7.0, "delta": "SAME", "proof": "idiomatic stdlib; defensive sanitization; HTTPS; broad except blocks log their errors. Blocker for 9.5: the regex-over-HTML scraping is intentionally coupled to the site's markup — idiomatic for a zero-dependency tool but not improvable without adding a parser dependency the project forbids (accepted ceiling)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
     "concurrency":               {"score": 9.5, "delta": "SAME", "proof": "no async/threading — synchronous CLI, no shared-mutable hazard", "residual_blocking_10": "time.sleep pacing is intentional server etiquette, not a determinism hazard", "residual_disposition": "accepted", "residual_rationale_or_backlog_ref": "Tool is deliberately synchronous; no concurrency model to make safer. Permanent design carve-out.", "unverifiable_due_to_build_failure": false},
-    "simplicity":                {"score": 8.0, "delta": "SAME", "proof": "search_boards is an orchestration core; all pure logic in small tested helpers. Residual: one redundant re-filter in main (F-007)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
-    "test_strategy":             {"score": 9.0, "delta": "UP", "proof": "SearchBoardsOrchestrationTests added (commit 74545e9) — pagination, dedup, view-sort, play-only exclusion, min-views, early-stop tested offline; 50 tests. Residual at loop start: SoundboardSnag pipeline untested (fixed this loop)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
-    "credibility":               {"score": 8.0, "delta": "SAME", "proof": "every Module is test-backed; the fetch seam follows the two-adapter rule; no fake-clean anywhere in the refactor history", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false}
+    "simplicity":                {"score": 8.5, "delta": "UP", "proof": "dropped the unreachable getcode()!=200 branch (commit 03d27ae); search_boards is an orchestration core with all pure logic in small tested helpers; the redundant main re-filter was removed this loop", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
+    "test_strategy":             {"score": 9.5, "delta": "UP", "proof": "SnagPipelineTests added (commit 03d27ae); 54 tests cover every pure helper, both orchestration surfaces (pagination/dedup/sort/filter/early-stop), and the pipeline guard/abort paths, with no sleeps (time.sleep patched)", "residual_blocking_10": "the byte-level download stream in _snag_sound and the HEAD date-probe in _fetch_last_modified_detailed are real leaf I/O, tested at the method-mock level rather than the byte level", "residual_disposition": "accepted", "residual_rationale_or_backlog_ref": "Byte-level streaming/HEAD tests would require faking a binary-streaming response object; low value for a stdlib download loop whose control flow (consecutive-failure abort, skip-existing) is already tested via a mocked _snag_sound. Accepted residual.", "unverifiable_due_to_build_failure": false},
+    "credibility":               {"score": 8.5, "delta": "UP", "proof": "every Module is test-backed and every refactor was independently reviewed and behavior-preserving (commit 03d27ae closed the last untested surface); a senior reviewer reading in source order finds each Interface confirmed by a test", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false}
   },
 
   "authority_map": [],
 
   "strengths": [
-    "Both network-orchestration surfaces (search_boards and SoundboardSnag.snag) are now testable offline through a single injected-function seam — no class ceremony",
-    "The SoundboardSnag guard logic (play-only detection, no-audio, the 2-consecutive-failure abort) is directly tested",
-    "Eight consecutive behavior-preserving, independently-reviewed refactors with a growing test suite — an honest, auditable trail"
+    "Ten consecutive behavior-preserving, independently-reviewed refactors with a test suite that grew 0 -> 54 — a fully auditable trail (every loop commit + review artifact)",
+    "The single injectable fetch seam makes both network-orchestration surfaces testable offline with two real adapters and zero class ceremony",
+    "Every pure helper (parse, filter, formatting, render) is fixture-tested at its real Interface; ownership is single-writer and concurrency is trivially safe throughout"
   ],
 
   "findings": [
     {
       "loop_local_id": "F1",
-      "stable_id": "F-008",
-      "title": "Network orchestration and the download pipeline are untestable (no injectable fetch seam)",
-      "why_it_matters": "The behavior-rich orchestration and the SoundboardSnag guard/abort logic could only be exercised against the live site.",
-      "what_is_wrong": "search_boards (last loop) and SoundboardSnag (this loop) called urlopen directly with no injection point for the page fetch.",
-      "evidence": ["soundboard-snag.py:520-528 (SoundboardSnag._fetch_page, pre-fix used inline urlopen)", "soundboard-snag.py:468 (SoundboardSnag.__init__ now takes fetcher)"],
-      "test_failed": "Two-adapter rule",
-      "dependency_category": "remote-owned",
-      "leverage_impact": "Without a seam, the guard/abort logic could not be verified offline.",
-      "locality_impact": "A regression in play-only detection or the failure-abort would only surface against the live site.",
-      "metric_signal": "none",
-      "why_weakens_submission": "Was the remaining test-strategy/architecture ceiling. A fetch seam (real _http_get + in-memory fake) satisfies the two-adapter rule on both surfaces and unlocks deterministic tests.",
-      "severity": "Serious deduction",
-      "adr_conflicts": [],
-      "adr_reopen_justification": null,
-      "minimal_correction_path": "Add a fetcher parameter to SoundboardSnag.__init__ defaulting to _http_get; route _fetch_page through it; test play-only RuntimeError, no-audio RuntimeError, the 2-consecutive-failure abort (mocking _snag_sound), and HTTP-error wrapping. The binary download and the HEAD date-probe remain real leaf I/O.",
-      "blast_radius": {"change": ["soundboard-snag.py", "test_soundboard_snag.py"], "avoid": ["_snag_sound binary download", "_fetch_last_modified_detailed date-probe", "filename sanitization"]}
-    },
-    {
-      "loop_local_id": "F2",
       "stable_id": "F-007",
       "title": "main re-filters search results that are already downloadable-only",
-      "why_it_matters": "A redundant filter implies search_boards might return play-only boards, which it does not; the duplication is mildly misleading.",
-      "what_is_wrong": "main computes downloadable_boards = [r for r in results if r.has_downloads], but search_boards already returns only has_downloads boards.",
-      "evidence": ["soundboard-snag.py:1601 (redundant re-filter in main)", "soundboard-snag.py: search_boards returns results filtered by has_downloads"],
+      "why_it_matters": "A redundant filter implied search_boards might return play-only boards, which it does not; the duplication was mildly misleading.",
+      "what_is_wrong": "main computed downloadable_boards = [r for r in results if r.has_downloads], but search_boards already returns only has_downloads boards.",
+      "evidence": ["soundboard-snag.py:1601 (redundant re-filter, pre-fix)", "soundboard-snag.py:1307 (search_boards' authoritative has_downloads filter)"],
       "test_failed": "Deletion test",
       "dependency_category": "in-process",
-      "leverage_impact": "None — the filter is a no-op.",
-      "locality_impact": "Minor: a reader may wonder whether search_boards can return play-only boards.",
+      "leverage_impact": "None — the filter was a no-op.",
+      "locality_impact": "Minor: a reader could wonder whether search_boards can return play-only boards.",
       "metric_signal": "none",
-      "why_weakens_submission": "Redundant defensive code is a small data-flow/simplicity deduction; the last remaining backlog item.",
+      "why_weakens_submission": "Redundant defensive code was a small data-flow/simplicity deduction; it was the last remaining backlog item.",
       "severity": "Cosmetic for contest",
       "adr_conflicts": [],
       "adr_reopen_justification": null,
-      "minimal_correction_path": "Replace the re-filter with downloadable_boards = results (or iterate results directly), with a comment that search_boards already guarantees has_downloads.",
+      "minimal_correction_path": "Replace the re-filter with downloadable_boards = results plus a comment that search_boards already guarantees has_downloads.",
       "blast_radius": {"change": ["soundboard-snag.py"], "avoid": ["search_boards filter logic"]}
     }
   ],
 
   "simplification_check": {
-    "structurally_necessary": "Extending the fetch seam to SoundboardSnag passes the two-adapter rule (real _http_get + in-memory fake used by the new tests) and is the only way to verify the guard/abort logic offline. _fetch_page collapses to self.fetcher(url) wrapped in the same RuntimeError mapping.",
-    "new_seam_justified": true,
-    "new_seam_adapters": ["_http_get (production urlopen adapter)", "in-memory fake fetcher in SnagPipelineTests"],
-    "helpful_simplification": "Dropped the effectively-unreachable getcode()!=200 branch (urlopen raises HTTPError for non-2xx; 3xx are followed), so the error mapping is unchanged for all reachable cases.",
-    "should_not_be_done": "Do not route the binary download (_snag_sound) or the HEAD date-probe through the text fetcher (they are byte/headers I/O, not text); do not add a client class hierarchy.",
-    "tests_after_fix": "test_soundboard_snag.py gains SnagPipelineTests (play-only RuntimeError, no-audio RuntimeError, 2-consecutive-failure abort via mocked _snag_sound, URLError->RuntimeError wrapping)."
+    "structurally_necessary": "Removing the redundant re-filter passes the Deletion test: search_boards guarantees has_downloads-only output (soundboard-snag.py:1307), so the main-side filter is a provable no-op and its removal changes no behavior.",
+    "new_seam_justified": false,
+    "new_seam_adapters": [],
+    "helpful_simplification": "downloadable_boards = results with a clarifying comment.",
+    "should_not_be_done": "Do not also drop the search_boards-side filter (it is the authoritative one).",
+    "tests_after_fix": "No test change needed — behavior unchanged; the 54-test suite stays green as a regression guard."
   },
 
-  "backlog": [
-    {"priority": 1, "title": "Inject a fetcher into SoundboardSnag and test the guard/abort logic (F-008 residual)", "kind": "structural", "rank": "needed for winning", "why_it_matters": "Completes the testability seam; the download pipeline's guard logic gets a regression guard.", "score_impact": "test_strategy +, architecture +"},
-    {"priority": 2, "title": "Remove the redundant downloadable re-filter in main (F-007)", "kind": "simplification", "rank": "helpful", "why_it_matters": "Last backlog item; subtractive; clarifies search_boards already guarantees downloadable-only.", "score_impact": "data_flow +, simplicity +"}
-  ],
-  "unresolved_reason": null,
+  "backlog": [],
+  "unresolved_reason": "loop counter reached cap of 10. The structural backlog is cleared (F-001..F-008 resolved, F-007 resolved this loop). Remaining sub-9.5 dimensions are accepted design ceilings, not actionable findings: state_management 7.5 (minimal mutable state in a procedural CLI), domain_modeling 6.5 (a deliberate 2-tuple; further typing is ceremony per the guardrail), framework_idioms 7.0 (regex-over-HTML is idiomatic for a zero-dependency tool and not improvable without a forbidden parser dependency). These cannot be turned into valid backlog items without over-engineering, so the run stops at the cap rather than manufacturing work.",
 
   "deepening_candidates": [],
 
   "builder_notes": [
     {
-      "pattern": "Extend an established seam to the sibling surface",
-      "how_to_recognize": "One network surface was made injectable; a second one (a class) still calls the network directly.",
-      "smallest_coding_rule": "Reuse the same default fetcher and pass it as a constructor parameter; route the page fetch through self.fetcher.",
-      "stack_example": "Python: SoundboardSnag(__init__ fetcher=_http_get); _fetch_page returns self.fetcher(url)."
+      "pattern": "Decompose a god-function by slicing pure logic out one tested helper at a time",
+      "how_to_recognize": "A large function fuses parsing, decision, formatting and I/O; nothing is testable without the network.",
+      "smallest_coding_rule": "Each loop, extract one pure slice (parse, then filter, then format, then render) behind a small Interface and test it; keep the I/O orchestration thin.",
+      "stack_example": "Python: search_boards went 720 -> ~615 lines as _parse_board_html, _evaluate_filters, and the format/render helpers came out, each with fixture tests."
     },
     {
-      "pattern": "Drop an unreachable defensive branch when its observable behavior is unchanged",
-      "how_to_recognize": "A status-code check sits after a call that already raises on the same condition.",
-      "smallest_coding_rule": "Confirm the branch is unreachable (urlopen raises HTTPError for non-2xx; redirects are followed), then remove it and update the docstring.",
-      "stack_example": "Python: the getcode()!=200 RuntimeError after urlopen never fired for this site."
+      "pattern": "A single injected function is the whole seam",
+      "how_to_recognize": "The most behavior-rich code calls the network directly and cannot be tested.",
+      "smallest_coding_rule": "Add a default real fetcher and an optional fetch parameter (or constructor arg); tests pass an in-memory fake. Two adapters satisfy the seam policy; no client class hierarchy.",
+      "stack_example": "Python: search_boards(fetch=_http_get) and SoundboardSnag(fetcher=_http_get) both became testable offline."
     },
     {
-      "pattern": "Mock the leaf method to test the loop around it",
-      "how_to_recognize": "The logic under test (a retry/abort loop) calls a method that does real I/O you do not want to fake at the byte level.",
-      "smallest_coding_rule": "mock.patch.object the leaf method to return canned outcomes; assert the loop's control flow (call count, abort).",
-      "stack_example": "Python: patch _snag_sound to return (False, 'boom'); assert it is called exactly twice before the abort."
+      "pattern": "Stop when the remaining work is an accepted ceiling, not a finding",
+      "how_to_recognize": "Scores plateau; the only way to raise a dimension is to add types/abstractions the design does not need.",
+      "smallest_coding_rule": "Name each sub-target dimension's blocker explicitly; if every fix is ceremony, record it as an accepted ceiling and halt rather than over-engineer.",
+      "stack_example": "Python: typing a (id, title) 2-tuple as a NamedTuple would be ceremony — left as a deliberate plain tuple."
     }
   ],
 
-  "narrative": "Win territory — a strong contender now. This loop completes the testability story: SoundboardSnag gets the same injected-fetcher seam, and its play-only, no-audio, and consecutive-failure-abort branches are directly tested. Every pure helper and both network-orchestration surfaces have regression guards; ownership is single-writer; concurrency is trivially safe; the refactor never once reached for ceremony. The remaining sub-9.5 dimensions are honest design ceilings (a deliberately plain 2-tuple, a single-file synchronous CLI) plus one cosmetic redundant filter — not structural hazards. The last loop should clear F-007 and the run should halt at the cap with a clear residual statement.",
+  "narrative": "Win territory, halted at the cap. Ten loops turned a single-file scraper with an anonymous 11-tuple, a 720-line god-function, and zero tests into a decomposed, fully-tested module: named domain records, pure parse/filter/format/render helpers, and an injectable fetch seam that makes both network surfaces testable offline — 54 green tests, every refactor behavior-preserving and independently reviewed. Runtime ownership is single-writer and trustworthy; concurrency is trivially safe by design; tests now catch contest-relevant regressions across the whole pure surface. The structural backlog is cleared; the remaining sub-9.5 dimensions are honest design ceilings of a zero-dependency synchronous CLI, not hazards. Future work risks over-engineering, so the run correctly stops at the cap rather than manufacturing it. Recommended: accept the contest-refactor branch as the new baseline.",
 
   "loop_result": {
-    "what_changed": "Added a fetcher parameter to SoundboardSnag.__init__ (default _http_get) and routed _fetch_page through self.fetcher, dropping the effectively-unreachable getcode()!=200 branch (error mapping unchanged). Updated the _fetch_page docstring to match. Added SnagPipelineTests (4 tests): play-only board raises 'downloads disabled', empty page raises 'No audio files found', five downloadable sounds with a mocked failing _snag_sound abort after exactly 2 consecutive failures, and a URLError from the fetcher is wrapped as RuntimeError 'Network error'.",
-    "evidence_change_is_honest": "python3 -m py_compile passes; python3 -m unittest test_soundboard_snag runs 54 tests, all OK (50 prior + 4 new); --help exits 0; on a real HTTP error the path is identical (self.fetcher==_http_get -> urlopen raises HTTPError -> same RuntimeError 'HTTP Error {code}: {reason}'); the only removed branch (getcode()!=200) was unreachable because urlopen raises HTTPError for non-2xx and follows 3xx; grep confirms _fetch_page no longer calls urlopen (only _http_get, the HEAD date-probe, and the binary download retain urlopen).",
+    "what_changed": "Removed the redundant downloadable re-filter in main (downloadable_boards = [r for r in results if r.has_downloads] -> downloadable_boards = results) with a comment noting search_boards already guarantees has_downloads-only output.",
+    "evidence_change_is_honest": "python3 -m py_compile passes; python3 -m unittest test_soundboard_snag runs 54 tests, all OK; --help exits 0; search_boards' own filter at soundboard-snag.py:1307 guarantees every returned BoardResult has has_downloads True, so the removed main-side filter was a provable no-op; the independent reviewer confirmed the deletion is behavior-preserving.",
     "risk_boundary_evidence": null,
     "targeted_finding_status": "resolved",
     "unintended_regression": null,
-    "changed_paths": ["soundboard-snag.py", "test_soundboard_snag.py"],
+    "changed_paths": ["soundboard-snag.py"],
     "interface_test_coverage_path": null
   },
 
   "implementation_review": {
     "verdict": "approved",
-    "reason": "All three checks pass: the fetch seam is correctly in place on SoundboardSnag, the dropped getcode()!=200 branch was genuinely unreachable (urlopen raises HTTPError for non-2xx and follows 3xx), two real adapters exist (_http_get + behavior-faithful fake), the docstring is updated, and all four SnagPipelineTests assert real behavior.",
+    "reason": "The redundant re-filter is cleanly removed and the claim is provably safe: search_boards filters results to has_downloads-only at line 1307 before returning, so the main-side replacement with downloadable_boards = results is a behavior-preserving deletion with no regression.",
     "checks": {"reality": "passed", "honesty": "passed", "regression": "passed"},
     "regressions": [],
     "conditions": [],
     "rounds": 1,
     "retry_count": 1,
     "retry_cause": null,
-    "retry_attempts": [{"attempt": 1, "outcome": "ok", "error": null, "duration_ms": 129462}]
+    "retry_attempts": [{"attempt": 1, "outcome": "ok", "error": null, "duration_ms": 35844}]
   }
 }
