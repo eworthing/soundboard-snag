@@ -1,6 +1,6 @@
 {
   "schema_version": 4,
-  "loop": 2,
+  "loop": 3,
   "loop_cap": 10,
   "state": "CONTINUE",
   "halt_subtype": null,
@@ -28,56 +28,37 @@
 
   "discovery": null,
 
-  "verdict": "Functionally solid, but structurally compromised",
-  "verdict_explanation": "After loop 1 the central record is a named BoardResult, which lifts domain modeling and data flow. The remaining structural gaps are the ~734-line search_boards function that still fuses transport, parsing, filtering, dates and rendering, and (at the start of this loop) the absence of any tests. This loop adds the missing test surface for the pure helpers.",
+  "verdict": "Good app, but not top-tier yet",
+  "verdict_explanation": "The three structural anchors are now addressed or in hand: the central record is a named BoardResult, the pure helpers have a real test suite (visible this loop), and this loop extracts the per-board parse into a testable module-level function. What keeps it short of top-tier is the still-large search_boards (transport + filter + date-scan + render remain fused) and two small residuals (a dead wrapper, duplicated render blocks).",
 
   "scorecard": {
-    "architecture_quality":      {"score": 5.5, "delta": "SAME", "proof": "search_boards still fuses transport+parse+filter+dates+render in one function (soundboard-snag.py:635-1369)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
-    "state_management":          {"score": 7.5, "delta": "SAME", "proof": "single-threaded; one writer per concern; SoundboardSnag attrs immutable post-__init__", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
-    "domain_modeling":           {"score": 6.0, "delta": "UP", "proof": "BoardResult NamedTuple introduced (soundboard-snag.py:89-110, commit afb1ab6) — the central record now names its fields", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
-    "data_flow":                 {"score": 7.0, "delta": "UP", "proof": "positional 11-tuple contract removed (commit afb1ab6); all read sites use named fields. Residual: main still re-filters results (soundboard-snag.py:~1560) duplicating search_boards' own filter", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
-    "framework_idioms":          {"score": 7.0, "delta": "SAME", "proof": "idiomatic stdlib; _sanitize_filename defensive (383-441 region); HTTPS; no secrets", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
+    "architecture_quality":      {"score": 5.5, "delta": "SAME", "proof": "at loop-3 start search_boards still fuses transport+parse+filter+dates+render (soundboard-snag.py:708-...); parse extraction is this loop's fix, scored next loop", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
+    "state_management":          {"score": 7.5, "delta": "SAME", "proof": "single-threaded; one writer per concern; immutable instance attrs", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
+    "domain_modeling":           {"score": 6.0, "delta": "SAME", "proof": "BoardResult names the central record; sounds_info still bare 2-tuples and approx_source stringly-typed", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
+    "data_flow":                 {"score": 7.0, "delta": "SAME", "proof": "named-field contract; residual: main re-filters results (soundboard-snag.py:1591) duplicating search_boards' filter (1247)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
+    "framework_idioms":          {"score": 7.0, "delta": "SAME", "proof": "idiomatic stdlib; defensive sanitization; HTTPS; no secrets", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
     "concurrency":               {"score": 9.5, "delta": "SAME", "proof": "no async/threading — synchronous CLI, no shared-mutable hazard", "residual_blocking_10": "time.sleep pacing is intentional server etiquette, not a determinism hazard", "residual_disposition": "accepted", "residual_rationale_or_backlog_ref": "Tool is deliberately synchronous; no concurrency model to make safer. Permanent design carve-out.", "unverifiable_due_to_build_failure": false},
-    "simplicity":                {"score": 5.0, "delta": "UP", "proof": "named field reads removed positional opacity at read sites (commit afb1ab6); but ~734-line function (635-1369), duplicated render (1159 vs 1336; 1249 vs 1361) and dead wrapper (246) remain", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
-    "test_strategy":             {"score": 2.5, "delta": "SAME", "proof": "at loop-2 start there were still zero tests; the suite is this loop's fix (reported in loop_result, scored next loop)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
-    "credibility":               {"score": 6.0, "delta": "UP", "proof": "BoardResult domain type makes the search engine's output self-describing (commit afb1ab6); code remains honest with no fake-clean", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false}
+    "simplicity":                {"score": 5.0, "delta": "SAME", "proof": "at loop-3 start the ~734-line function, duplicated render (1190 vs 1367; 1280 vs 1392) and dead wrapper (319) remain; parse extraction is this loop's fix", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
+    "test_strategy":             {"score": 6.5, "delta": "UP", "proof": "test_soundboard_snag.py (commit db6f0bf) adds 24 real assertions at the pure-helper Interfaces — sanitization, views/date parsing, slug/header extraction, formatters. Residual: search_boards' parse/network paths still untested (addressed this loop by extracting the pure parse)", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false},
+    "credibility":               {"score": 6.5, "delta": "UP", "proof": "a real test suite now backs the helper claims (commit db6f0bf), and BoardResult makes output self-describing; code remains honest with no fake-clean", "residual_blocking_10": null, "residual_disposition": null, "residual_rationale_or_backlog_ref": null, "unverifiable_due_to_build_failure": false}
   },
 
   "authority_map": [],
 
   "strengths": [
-    "Loop 1's BoardResult is a genuine deepening: the search engine's output now names its 11 fields with zero behavioral change (still a tuple at runtime)",
-    "Filename sanitization remains a real defensive strength against untrusted header/title input (soundboard-snag.py:_sanitize_filename)",
-    "Synchronous design keeps the concurrency surface trivially safe"
+    "The test suite from loop 2 exercises the genuinely branchy logic (filename sanitization, compact-views parsing) at the real Interfaces — not glue or snapshots",
+    "BoardResult continues to make the search engine's output self-describing with no runtime cost",
+    "Synchronous design keeps concurrency trivially safe; defensive filename sanitization remains a real strength"
   ],
 
   "findings": [
     {
       "loop_local_id": "F1",
-      "stable_id": "F-003",
-      "title": "Zero automated tests; deterministic helpers untested; hyphenated module name blocks import",
-      "why_it_matters": "Multi-branch pure logic (filename sanitization, views/date parsing) can regress silently with no signal, and the file name itself obstructs even writing a test.",
-      "what_is_wrong": "No test files exist. Network-free deterministic functions with non-trivial branching are untested, and the module file name has a hyphen so it cannot be imported without importlib.",
-      "evidence": ["repository root has no test_*.py at loop-2 start", "soundboard-snag.py:_sanitize_filename (many branches)", "soundboard-snag.py:_parse_views_count", "soundboard-snag.py filename contains a hyphen"],
-      "test_failed": "n/a",
-      "dependency_category": null,
-      "leverage_impact": "Without tests at the helper interfaces, every refactor of those helpers is unverified.",
-      "locality_impact": "A sanitization regression would corrupt output filenames across every download with no failing test.",
-      "metric_signal": "none",
-      "why_weakens_submission": "Absence of tests on parsing/sanitization logic is the binding regression-resistance gap and caps the test-strategy dimension; it also blocks the safe extraction of parsing in F2.",
-      "severity": "Serious deduction",
-      "adr_conflicts": [],
-      "adr_reopen_justification": null,
-      "minimal_correction_path": "Add test_soundboard_snag.py using stdlib unittest, loading the module via importlib.util.spec_from_file_location; table-driven cases for _sanitize_filename, _parse_views_count, _parse_http_datetime, _extract_board_slugs_from_search_html, _extract_filename_from_headers, _quote_path_segment, the date formatters.",
-      "blast_radius": {"change": ["test_soundboard_snag.py (new)"], "avoid": ["soundboard-snag.py production logic"]}
-    },
-    {
-      "loop_local_id": "F2",
       "stable_id": "F-002",
       "title": "search_boards is a ~734-line function fusing transport, parsing, filtering, date inference and rendering",
       "why_it_matters": "The core scraping logic cannot be tested or reused because it is welded to network I/O and terminal printing.",
-      "what_is_wrong": "A single function performs HTTP fetching, regex HTML extraction, domain filtering, date inference, sorting and all terminal rendering interleaved inside one deeply nested loop.",
-      "evidence": ["soundboard-snag.py:635-1369 (function span)", "soundboard-snag.py:~870-960 (inline per-board parse)", "soundboard-snag.py:~985-1070 (inline date scan)"],
+      "what_is_wrong": "A single function performs HTTP fetching, regex HTML extraction, domain filtering, date inference, sorting and all terminal rendering interleaved inside one deeply nested loop. The HTML extraction is pure and could be a tested Module.",
+      "evidence": ["soundboard-snag.py:708-1402 (function span at loop-3 start)", "soundboard-snag.py:883-943 (inline per-board parse block, pre-extraction)"],
       "test_failed": "Shallow module",
       "dependency_category": "in-process",
       "leverage_impact": "Maintainers must hold the entire function in their head to change any one concern.",
@@ -87,16 +68,16 @@
       "severity": "Serious deduction",
       "adr_conflicts": [],
       "adr_reopen_justification": null,
-      "minimal_correction_path": "Extract the pure per-board HTML->BoardResult parsing into a module-level function; now de-risked by the helper test suite added this loop. Do over multiple loops; no class hierarchy.",
-      "blast_radius": {"change": ["soundboard-snag.py", "test_soundboard_snag.py"], "avoid": ["SoundboardSnag class", "main argparse"]}
+      "minimal_correction_path": "Extract the pure per-board HTML parsing into a module-level _parse_board_html(board_html) -> ParsedBoard, leaving transport/filtering/rendering in search_boards; add fixture-based tests for it. Now de-risked by the helper suite.",
+      "blast_radius": {"change": ["soundboard-snag.py", "test_soundboard_snag.py"], "avoid": ["SoundboardSnag class", "main argparse", "date-scan network logic"]}
     },
     {
-      "loop_local_id": "F3",
+      "loop_local_id": "F2",
       "stable_id": "F-004",
       "title": "Dead pass-through wrapper _fetch_last_modified",
       "why_it_matters": "Unused indirection adds reading cost and a second name for one behavior with no caller to justify it.",
       "what_is_wrong": "_fetch_last_modified wraps _fetch_last_modified_detailed and discards the diagnostic, but nothing in the module calls it.",
-      "evidence": ["soundboard-snag.py:246-249 (definition, sole occurrence)", "grep confirms zero internal callers"],
+      "evidence": ["soundboard-snag.py:319-322 (definition, sole occurrence)", "grep confirms zero internal callers"],
       "test_failed": "Deletion test",
       "dependency_category": "in-process",
       "leverage_impact": "None — the wrapper buys nothing.",
@@ -106,101 +87,101 @@
       "severity": "Cosmetic for contest",
       "adr_conflicts": [],
       "adr_reopen_justification": null,
-      "minimal_correction_path": "Delete _fetch_last_modified (soundboard-snag.py:246-249).",
+      "minimal_correction_path": "Delete _fetch_last_modified (soundboard-snag.py:319-322).",
       "blast_radius": {"change": ["soundboard-snag.py"], "avoid": ["_fetch_last_modified_detailed", "fetch_last_modified_cached"]}
     },
     {
-      "loop_local_id": "F4",
+      "loop_local_id": "F3",
       "stable_id": "F-005",
       "title": "Date-display and skipped-breakdown rendering duplicated near-verbatim",
       "why_it_matters": "Two copies of the same presentation logic must be kept in sync by hand; they will drift.",
       "what_is_wrong": "The approx-updated date block and the skipped-buckets breakdown block each appear twice with near-identical bodies.",
-      "evidence": ["soundboard-snag.py:~1144-1159 vs ~1321-1336 (date-display block)", "soundboard-snag.py:~1239-1249 vs ~1351-1361 (skipped-breakdown block)"],
+      "evidence": ["soundboard-snag.py:1175-1190 vs 1352-1367 (date-display block)", "soundboard-snag.py:1270-1280 vs 1382-1392 (skipped-breakdown block)"],
       "test_failed": "Deletion test",
       "dependency_category": "in-process",
       "leverage_impact": "A formatting change must be made in two places.",
       "locality_impact": "Drift between the two copies produces inconsistent output for the same data.",
       "metric_signal": "none",
-      "why_weakens_submission": "Duplicate presentation logic is a simplification deduction and compounds F2.",
+      "why_weakens_submission": "Duplicate presentation logic is a simplification deduction.",
       "severity": "Noticeable weakness",
       "adr_conflicts": [],
       "adr_reopen_justification": null,
-      "minimal_correction_path": "Once F2 separates rendering, extract the two blocks into small module-level format helpers taking a BoardResult and the date-stats map.",
+      "minimal_correction_path": "Extract the two blocks into small module-level format helpers taking a BoardResult and the date-stats map.",
       "blast_radius": {"change": ["soundboard-snag.py"], "avoid": ["search/transport loop"]}
     }
   ],
 
   "simplification_check": {
-    "structurally_necessary": "F3 adds tests at real Interfaces (the pure helper functions). This is net-new coverage at clean interfaces, not layering — the helpers are already the right surface.",
+    "structurally_necessary": "F2 extraction passes the Shallow-module test: the per-board parse is now a Module with a small Interface (html in, ParsedBoard out) and Depth (10 regex extractions behind it), reached directly by tests. No new Seam (in-process pure function), so the Unified Seam Policy does not apply.",
     "new_seam_justified": false,
     "new_seam_adapters": [],
-    "helpful_simplification": "The test suite de-risks the F2 parse extraction planned next.",
-    "should_not_be_done": "Do not test search_boards or _snag_sound end-to-end with network mocking ceremony this loop — the pure helpers are the honest first test surface; the network paths become testable only after F2 extracts the pure parse.",
-    "tests_after_fix": "test_soundboard_snag.py asserts behavior at the helper Interfaces (_sanitize_filename, _parse_views_count, _parse_http_datetime, _extract_board_slugs_from_search_html, _extract_filename_from_headers, _quote_path_segment, date formatters). No old tests to delete (none existed)."
+    "helpful_simplification": "search_boards shrinks; the parse becomes fixture-testable without network.",
+    "should_not_be_done": "Do not also extract a parser class hierarchy, a strategy object, or a port — one pure function is the honest shape. Do not extract the date-scan (it is network-bound) this loop.",
+    "tests_after_fix": "test_soundboard_snag.py gains ParseBoardHtmlTests (full board, play-only, deduped ids, empty html) asserting at the new _parse_board_html Interface. No old tests become shallow (the helper tests stay valid)."
   },
 
   "backlog": [
-    {"priority": 1, "title": "Add a stdlib unittest suite for the pure helpers (F3 / F-003)", "kind": "structural", "rank": "needed for winning", "why_it_matters": "Test strategy is the binding constraint and the prerequisite for safely extracting parsing.", "score_impact": "test_strategy + (largest lever), credibility +"},
-    {"priority": 2, "title": "Extract pure per-board HTML parsing from search_boards (F2 / F-002)", "kind": "structural", "rank": "needed for winning", "why_it_matters": "Makes the core scraping logic testable and shrinks the god-function.", "score_impact": "architecture +, simplicity +, test_strategy +"},
-    {"priority": 3, "title": "Delete dead wrapper _fetch_last_modified (F4 / F-004)", "kind": "simplification", "rank": "helpful", "why_it_matters": "Trivial subtractive cleanup; removes a second name for one behavior.", "score_impact": "simplicity +"}
+    {"priority": 1, "title": "Extract pure per-board HTML parsing from search_boards (F2 / F-002)", "kind": "structural", "rank": "needed for winning", "why_it_matters": "Makes the core scraping logic testable and shrinks the god-function.", "score_impact": "architecture +, simplicity +, test_strategy +"},
+    {"priority": 2, "title": "Delete dead wrapper _fetch_last_modified (F-004)", "kind": "simplification", "rank": "helpful", "why_it_matters": "Trivial subtractive cleanup.", "score_impact": "simplicity +"},
+    {"priority": 3, "title": "De-duplicate the date-display and skipped-breakdown render blocks (F-005)", "kind": "simplification", "rank": "helpful", "why_it_matters": "Removes drift-prone copies; further shrinks search_boards.", "score_impact": "simplicity +"}
   ],
   "unresolved_reason": null,
 
   "deepening_candidates": [
     {
-      "candidate_module": "Per-board HTML parsing inside search_boards",
-      "source_friction_proven": "Finding F2 — the parse logic is unreachable for testing because it is fused with network I/O and printing",
-      "why_shallow_or_misplaced": "There is no parsing interface; the behavior is inlined in a ~734-line function so it has neither Depth nor a Seam.",
-      "behavior_to_move_behind_interface": "Regex extraction of board name, downloads flag, sound ids/titles, description, category, views, tags from one board's HTML, returning the parsed fields.",
+      "candidate_module": "_parse_board_html",
+      "source_friction_proven": "Finding F2 — the parse logic was unreachable for testing while fused with I/O",
+      "why_shallow_or_misplaced": "Before this loop there was no parsing Interface at all; the behavior was inlined.",
+      "behavior_to_move_behind_interface": "Regex extraction of board name fields, downloads flag, sound ids/titles, description, category, views, tags from one board's HTML.",
       "dependency_category": "in-process",
-      "test_surface_after_change": "test_soundboard_snag.py asserts parsing on saved HTML fixtures without network.",
-      "smallest_first_step": "Extract _parse_board_html(html, board_name) returning the parsed fields; call it from the loop.",
-      "what_not_to_do": "Do not introduce a parser class hierarchy or strategy pattern; one pure function is the honest shape."
+      "test_surface_after_change": "ParseBoardHtmlTests asserts on synthetic HTML fixtures without network.",
+      "smallest_first_step": "Done this loop: extract _parse_board_html and route search_boards through it.",
+      "what_not_to_do": "Do not add a parser class hierarchy or strategy pattern."
     }
   ],
 
   "builder_notes": [
     {
-      "pattern": "Untestable logic because the file name is not importable",
-      "how_to_recognize": "The module file has a hyphen or other non-identifier char, so `import x` fails and there is no test file at all.",
-      "smallest_coding_rule": "Load by path with importlib.util.spec_from_file_location under a clean module name; loading runs only top-level definitions when main() is guarded by __name__ == '__main__'.",
-      "stack_example": "Python: spec_from_file_location('soundboard_snag', 'soundboard-snag.py') gives an importable handle to a hyphenated file."
+      "pattern": "Pure computation fused inside an I/O loop",
+      "how_to_recognize": "A block of regex/transform code sits between a network read and a print, sharing the loop's locals; you cannot test it without the network.",
+      "smallest_coding_rule": "Move the pure block to a module-level function taking the raw input and returning a named record; the loop binds locals from it.",
+      "stack_example": "Python: _parse_board_html(board_html) -> ParsedBoard makes 10 regex extractions fixture-testable."
     },
     {
-      "pattern": "Characterization tests before a risky refactor",
-      "how_to_recognize": "You are about to extract or move logic that has no tests; a silent behavior change would go unnoticed.",
-      "smallest_coding_rule": "Pin current observable behavior of the pure helpers first (including the non-obvious cases), then refactor against a green suite.",
-      "stack_example": "Python: assert _sanitize_filename('CON.mp3', ...) == '_Con.mp3' captures the exact title-case-then-reserve ordering before you touch it."
+      "pattern": "Return a named record from a parser, not a pile of locals",
+      "how_to_recognize": "The extracted function would otherwise return a long tuple or set many out-params.",
+      "smallest_coding_rule": "Give the parser a NamedTuple result so call sites and tests read fields by name.",
+      "stack_example": "Python: ParsedBoard(NamedTuple) carries sound_matches, has_downloads, download_ids, ... ."
     },
     {
-      "pattern": "Test the pure surface, not the I/O surface",
-      "how_to_recognize": "The tempting target is the big network function, but it needs heavy mocking; the real value is in the deterministic helpers it calls.",
-      "smallest_coding_rule": "Test the network-free functions directly; only mock I/O after you have extracted the pure logic from it.",
-      "stack_example": "Python: test _parse_views_count / _parse_http_datetime directly; defer testing search_boards until parsing is extracted."
+      "pattern": "Test the extracted Interface with a synthetic fixture",
+      "how_to_recognize": "A newly-extracted pure function has no direct test, only transitive coverage through the I/O caller.",
+      "smallest_coding_rule": "Write a small representative input string and assert each field of the returned record, including an empty-input case.",
+      "stack_example": "Python: a 10-line board HTML string asserts download dedup, tag extraction, views parsing, html-unescape of preview titles."
     }
   ],
 
-  "narrative": "Place — still functionally solid and structurally improving. Loop 1's BoardResult lifted domain modeling, data flow, simplicity and credibility with no behavioral change. This loop closes the most glaring regression-resistance gap by adding a 24-case characterization suite over the pure helpers, loaded past the hyphenated-filename obstacle via importlib. Ownership and concurrency remain trustworthy. The next structural move is extracting per-board parsing from the 734-line search engine, now de-risked by the test suite; the standing risk is over-reaching toward a package split or HTTP seam the single-file design does not warrant.",
+  "narrative": "Place — now a good app, not yet top-tier. The three structural anchors are handled: named BoardResult, a real helper test suite (visible this loop and lifting test_strategy and credibility), and this loop's extraction of the per-board parse into a fixture-tested _parse_board_html. search_boards still owns transport, filtering, the network date-scan and all rendering, so architecture and simplicity have further to climb (scored next loop). Ownership and concurrency remain trustworthy. Remaining backlog is small and subtractive (dead wrapper, duplicated render); the standing risk is over-reaching toward decomposition the single-file design does not need.",
 
   "loop_result": {
-    "what_changed": "Added test_soundboard_snag.py, a stdlib unittest suite of 24 characterization tests over the pure network-free helpers (_parse_views_count, _parse_http_datetime, _extract_board_slugs_from_search_html, _quote_path_segment, _extract_filename_from_headers, _sanitize_filename, the date formatters), loading the hyphenated module via importlib.",
-    "evidence_change_is_honest": "python3 -m py_compile passes on both files; python3 -m unittest test_soundboard_snag runs 24 tests, all OK; the assertions pin real current behavior including non-obvious cases (CON.mp3 -> _Con.mp3, audio_42 -> 'Audio 42.mp3', percent-escape preservation, UTC datetime conversion). No production code was touched, so behavior is unchanged by construction.",
+    "what_changed": "Extracted the pure per-board HTML parsing out of search_boards into a module-level _parse_board_html(board_html) -> ParsedBoard (NamedTuple); search_boards now calls it and binds locals from the result. Added ParseBoardHtmlTests (4 fixture-based tests) covering a full board, a play-only board, download-id de-duplication, and empty HTML.",
+    "evidence_change_is_honest": "python3 -m py_compile passes; python3 -m unittest test_soundboard_snag runs 28 tests, all OK (24 prior + 4 new parse tests); --help exits 0; the extraction reuses the identical regexes/dedup/unescape logic so it is behavior-preserving; grep confirms the parse regexes (item-desc, btn-download-track, Category/Views/Tags) no longer appear in the search_boards body (only the render-label print remains), and search_boards shrank from ~734 to ~694 lines.",
     "risk_boundary_evidence": null,
     "targeted_finding_status": "resolved",
     "unintended_regression": null,
-    "changed_paths": ["test_soundboard_snag.py"],
+    "changed_paths": ["soundboard-snag.py", "test_soundboard_snag.py"],
     "interface_test_coverage_path": null
   },
 
   "implementation_review": {
     "verdict": "approved",
-    "reason": "All three checks pass: F-003 is resolved by a real 186-line test file that loads the hyphenated module via importlib and asserts behavior across all six named pure helpers plus date formatters; every spot-checked assertion reflects actual production code behavior; no production file was modified and the test suite makes no network calls.",
+    "reason": "F-002 is genuinely fixed: _parse_board_html and ParsedBoard exist, all parse regexes are gone from search_boards, all locals are correctly rebound at the call site, the counter/status/preview_count computations survive, and the four ParseBoardHtmlTests assert real field values at the new Interface.",
     "checks": {"reality": "passed", "honesty": "passed", "regression": "passed"},
     "regressions": [],
     "conditions": [],
     "rounds": 1,
     "retry_count": 1,
     "retry_cause": null,
-    "retry_attempts": [{"attempt": 1, "outcome": "ok", "error": null, "duration_ms": 118999}]
+    "retry_attempts": [{"attempt": 1, "outcome": "ok", "error": null, "duration_ms": 169256}]
   }
 }

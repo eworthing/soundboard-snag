@@ -108,6 +108,79 @@ class BoardResult(NamedTuple):
     approx_source: Optional[str]
 
 
+class ParsedBoard(NamedTuple):
+    """Fields parsed from a single board page's HTML.
+
+    Everything here is a pure function of the board-page markup, so it can be
+    unit-tested against a saved HTML fixture with no network. Network-derived
+    data (the approximate updated date) and filter/render decisions stay in
+    ``search_boards``.
+    """
+    sound_matches: List[Tuple[str, str]]
+    has_downloads: bool
+    download_ids: List[str]
+    board_desc: str
+    category: str
+    views: str
+    views_int: int
+    tags: List[str]
+    sounds_info: List[Tuple[str, str]]
+    sound_count: int
+
+
+def _parse_board_html(board_html):
+    """Parse one board page's HTML into a ParsedBoard (pure; no network)."""
+    # Sound IDs and titles
+    sound_matches = re.findall(r'data-src="(\d+)".*?<span>([^<]+)</span>', board_html, re.DOTALL)
+
+    # Download buttons present?
+    download_pattern = r'<a href="/sb/sound/\d+"[^>]*class="[^"]*btn-download-track'
+    has_downloads = re.search(download_pattern, board_html) is not None
+
+    # Downloadable sound IDs (more reliable for date checks than data-src), de-duplicated in order
+    download_ids_raw = re.findall(r'<a href="/sb/sound/(\d+)"[^>]*class="[^"]*btn-download-track', board_html)
+    download_ids = []
+    seen_download_ids = set()
+    for sid in download_ids_raw:
+        if sid not in seen_download_ids:
+            download_ids.append(sid)
+            seen_download_ids.add(sid)
+
+    # Description
+    desc_match = re.search(r'<p class="item-desc[^"]*"[^>]*>([^<]*)</p>', board_html)
+    board_desc = html.unescape(desc_match.group(1).strip()) if desc_match and desc_match.group(1).strip() else ""
+
+    # Category
+    cat_match = re.search(r'<strong>Category:\s*</strong>\s*<span class="text-muted">\s*([^<]+)</span>', board_html)
+    category = html.unescape(cat_match.group(1).strip()) if cat_match else ""
+
+    # Views
+    views_match = re.search(r'<strong>Views:\s*</strong>\s*<span class="text-muted">\s*([^<]+)</span>', board_html)
+    views = html.unescape(views_match.group(1).strip()) if views_match else ""
+
+    # Tags
+    tags = []
+    tags_match = re.search(r'<strong>Tags:\s*</strong>(.*?)</div>', board_html, re.DOTALL)
+    if tags_match:
+        tags = [html.unescape(t.strip()) for t in re.findall(r'<a[^>]*>([^<]+)</a>', tags_match.group(1)) if t.strip()]
+
+    # Preview filenames (first 10), titles cleaned
+    sounds_info = [(sid, html.unescape(title.strip())) for sid, title in sound_matches[:10]]
+
+    return ParsedBoard(
+        sound_matches=sound_matches,
+        has_downloads=has_downloads,
+        download_ids=download_ids,
+        board_desc=board_desc,
+        category=category,
+        views=views,
+        views_int=_parse_views_count(views),
+        tags=tags,
+        sounds_info=sounds_info,
+        sound_count=len(sound_matches),
+    )
+
+
 def _quote_path_segment(value):
     """Quote a URL path segment without double-encoding existing percent escapes."""
     # Keep '%' safe so values like "PRINS%20JULIUS" aren't double-encoded.
@@ -880,67 +953,25 @@ def search_boards(
                 if logger:
                     logger.event("board_fetch_ok", board=board_name, url=board_url, bytes=len(board_html))
 
-                # Extract sound IDs and titles
-                sound_pattern = r'data-src="(\d+)".*?<span>([^<]+)</span>'
-                sound_matches = re.findall(sound_pattern, board_html, re.DOTALL)
+                # Parse all board-page fields (pure; unit-tested via _parse_board_html)
+                parsed = _parse_board_html(board_html)
+                sound_matches = parsed.sound_matches
+                has_downloads = parsed.has_downloads
+                download_ids_deduped = parsed.download_ids
+                board_desc = parsed.board_desc
+                category = parsed.category
+                views = parsed.views
+                tags = parsed.tags
+                sounds_info = parsed.sounds_info
+                sound_count = parsed.sound_count
+                views_int = parsed.views_int
 
-                # Check if first sound has download button
-                download_pattern = r'<a href="/sb/sound/\d+"[^>]*class="[^"]*btn-download-track'
-                has_downloads = re.search(download_pattern, board_html) is not None
                 if has_downloads:
                     boards_with_downloads_total += 1
-
-                # Extract downloadable sound IDs (more reliable for date checks than data-src)
-                download_id_pattern = r'<a href="/sb/sound/(\d+)"[^>]*class="[^"]*btn-download-track'
-                download_ids = re.findall(download_id_pattern, board_html)
-                # De-duplicate while preserving order
-                download_ids_deduped = []
-                seen_download_ids = set()
-                for sid in download_ids:
-                    if sid not in seen_download_ids:
-                        download_ids_deduped.append(sid)
-                        seen_download_ids.add(sid)
-
-                # Extract board description
-                desc_pattern = r'<p class="item-desc[^"]*"[^>]*>([^<]*)</p>'
-                desc_match = re.search(desc_pattern, board_html)
-                board_desc = html.unescape(desc_match.group(1).strip()) if desc_match and desc_match.group(1).strip() else ""
-
-                # Extract category
-                cat_pattern = r'<strong>Category:\s*</strong>\s*<span class="text-muted">\s*([^<]+)</span>'
-                cat_match = re.search(cat_pattern, board_html)
-                category = html.unescape(cat_match.group(1).strip()) if cat_match else ""
-
-                # Extract views
-                views_pattern = r'<strong>Views:\s*</strong>\s*<span class="text-muted">\s*([^<]+)</span>'
-                views_match = re.search(views_pattern, board_html)
-                views = html.unescape(views_match.group(1).strip()) if views_match else ""
-
-                # Extract tags
-                tags_section = r'<strong>Tags:\s*</strong>(.*?)</div>'
-                tags_match = re.search(tags_section, board_html, re.DOTALL)
-                tags = []
-                if tags_match:
-                    tags_html = tags_match.group(1)
-                    tag_pattern = r'<a[^>]*>([^<]+)</a>'
-                    tags = [html.unescape(t.strip()) for t in re.findall(tag_pattern, tags_html) if t.strip()]
-
-                # Extract filenames for preview (first 10)
-                sounds_info = []
-                preview_limit = 10  # Show first 10 files
-                for sound_id, title in sound_matches[:preview_limit]:
-                    title_clean = html.unescape(title.strip())
-                    sounds_info.append((sound_id, title_clean))
-
-                if has_downloads:
                     status = f"{Colors.GREEN}✓{Colors.RESET}"
                 else:
                     status = f"{Colors.RED}✗{Colors.RESET}"
-                sound_count = len(sound_matches)
                 preview_count = len(sounds_info)
-
-                # Convert views to integer for sorting (handle commas and missing values)
-                views_int = _parse_views_count(views)
 
                 fails_basic_filters = (
                     (min_views > 0 and views_int < min_views)

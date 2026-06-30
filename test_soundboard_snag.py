@@ -182,5 +182,65 @@ class SanitizeFilenameTests(_SnagHelpersMixin):
         self.assertNotIn("abcd1234", out)
 
 
+_BOARD_HTML = (
+    '<div class="item r" data-src="123">'
+    '<a href="/sb/sound/123" class="btn-download-track">dl</a>'
+    '<div class="item-title text-ellipsis"><span>Hello Title</span></div></div>'
+    '<div class="item r" data-src="456">'
+    '<a href="/sb/sound/456" class="btn-download-track">dl</a>'
+    '<div class="item-title text-ellipsis"><span>Second &amp; Sound</span></div></div>'
+    '<p class="item-desc">A great board</p>'
+    '<strong>Category: </strong><span class="text-muted"> Movies</span>'
+    '<strong>Views: </strong><span class="text-muted"> 1,234</span>'
+    '<strong>Tags: </strong><a href="x">funny</a> <a href="y">memes</a></div>'
+)
+
+
+class ParseBoardHtmlTests(unittest.TestCase):
+    def test_full_board(self):
+        p = sb._parse_board_html(_BOARD_HTML)
+        self.assertTrue(p.has_downloads)
+        self.assertEqual(p.download_ids, ["123", "456"])
+        self.assertEqual(p.sound_count, 2)
+        self.assertEqual(p.board_desc, "A great board")
+        self.assertEqual(p.category, "Movies")
+        self.assertEqual(p.views, "1,234")
+        self.assertEqual(p.views_int, 1234)
+        self.assertEqual(p.tags, ["funny", "memes"])
+        # sounds_info titles are html-unescaped; sound_matches keep raw titles
+        self.assertEqual(p.sounds_info, [("123", "Hello Title"), ("456", "Second & Sound")])
+        self.assertEqual(p.sound_matches[1][1], "Second &amp; Sound")
+
+    def test_play_only_board_has_no_downloads(self):
+        play_only = (
+            '<div class="item r" data-src="9"><div class="item-title text-ellipsis">'
+            '<span>Only</span></div></div>'
+        )
+        p = sb._parse_board_html(play_only)
+        self.assertFalse(p.has_downloads)
+        self.assertEqual(p.download_ids, [])
+        self.assertEqual(p.sound_count, 1)
+
+    def test_download_ids_deduped_in_order(self):
+        dup = (
+            '<a href="/sb/sound/5" class="btn-download-track">a</a>'
+            '<a href="/sb/sound/5" class="btn-download-track">a</a>'
+            '<a href="/sb/sound/7" class="btn-download-track">b</a>'
+        )
+        self.assertEqual(sb._parse_board_html(dup).download_ids, ["5", "7"])
+
+    def test_empty_html_is_all_defaults(self):
+        p = sb._parse_board_html("")
+        self.assertFalse(p.has_downloads)
+        self.assertEqual(p.sound_count, 0)
+        self.assertEqual(p.download_ids, [])
+        self.assertEqual(p.board_desc, "")
+        self.assertEqual(p.category, "")
+        self.assertEqual(p.views, "")
+        self.assertEqual(p.views_int, 0)
+        self.assertEqual(p.tags, [])
+        self.assertEqual(p.sounds_info, [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
