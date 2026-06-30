@@ -181,6 +181,29 @@ def _parse_board_html(board_html):
     )
 
 
+def _evaluate_filters(views_int, sound_count, approx_updated,
+                      min_views, min_sounds, recent_threshold, recent_days):
+    """Decide whether a board passes the active search filters (pure).
+
+    Returns ``(meets, failures)`` where ``failures`` is a list of
+    ``(bucket_key, reason)`` tuples in evaluation order. ``bucket_key`` matches
+    the ``skipped_buckets`` keys so the caller can attribute skips; ``reason`` is
+    the human-readable explanation. The date filter is only evaluated when the
+    basic (views/sounds) filters pass, matching the original skip-accuracy rule.
+    """
+    failures = []
+    if min_views > 0 and views_int < min_views:
+        failures.append(("views", f"views ({views_int}) < min_views ({min_views})"))
+    if min_sounds > 0 and sound_count < min_sounds:
+        failures.append(("sounds", f"sounds ({sound_count}) < min_sounds ({min_sounds})"))
+    if recent_threshold is not None and not failures:
+        if not approx_updated:
+            failures.append(("updated_unknown", "updated date unavailable"))
+        elif approx_updated < recent_threshold:
+            failures.append(("updated_too_old", f"updated ({_format_date(approx_updated)}) older than {recent_days} days"))
+    return (not failures, failures)
+
+
 def _quote_path_segment(value):
     """Quote a URL path segment without double-encoding existing percent escapes."""
     # Keep '%' safe so values like "PRINS%20JULIUS" aren't double-encoded.
@@ -1091,33 +1114,17 @@ def search_boards(
                             boards_with_unknown_date_total += 1
 
 
-                # Apply filters first
-                meets_filters = True
-                filter_reasons = []
-                if min_views > 0 and views_int < min_views:
-                    meets_filters = False
-                    if has_downloads:
-                        skipped_buckets["views"] += 1
-                    filter_reasons.append(f"views ({views_int}) < min_views ({min_views})")
-                if min_sounds > 0 and sound_count < min_sounds:
-                    meets_filters = False
-                    if has_downloads:
-                        skipped_buckets["sounds"] += 1
-                    filter_reasons.append(f"sounds ({sound_count}) < min_sounds ({min_sounds})")
-                # Only apply the date-based filter if the board still passes the basic filters.
-                # This keeps skip reasons accurate (e.g., don't mark a board as "updated unknown"
-                # if we intentionally skipped date inference because it already failed views/sounds).
-                if recent_threshold is not None and meets_filters:
-                    if not approx_updated:
-                        meets_filters = False
-                        if has_downloads:
-                            skipped_buckets["updated_unknown"] += 1
-                        filter_reasons.append("updated date unavailable")
-                    elif approx_updated < recent_threshold:
-                        meets_filters = False
-                        if has_downloads:
-                            skipped_buckets["updated_too_old"] += 1
-                        filter_reasons.append(f"updated ({_format_date(approx_updated)}) older than {recent_days} days")
+                # Apply filters (pure decision; bucket attribution stays here).
+                # Date filter is only evaluated when the basic filters pass, which
+                # keeps skip reasons accurate — see _evaluate_filters.
+                meets_filters, filter_failures = _evaluate_filters(
+                    views_int, sound_count, approx_updated,
+                    min_views, min_sounds, recent_threshold, recent_days,
+                )
+                filter_reasons = [reason for _, reason in filter_failures]
+                if has_downloads:
+                    for bucket_key, _ in filter_failures:
+                        skipped_buckets[bucket_key] += 1
 
                 # Collect suggestions for --recent-days near-misses.
                 # Only consider boards that are downloadable and would otherwise pass the basic filters.

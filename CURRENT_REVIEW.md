@@ -1,74 +1,69 @@
 <!-- loop_cap: 10 -->
 
 ### Loop Counter
-Loop 4 of 10 (cap)
+Loop 5 of 10 (cap)
 
 ### System Flag
 [STATE: CONTINUE]
 
-(Discovery + Authority Map first-loop-only — see REVIEW_HISTORY.md loop 1. Provider claude_code; loop inline in main (Opus); reviewer + challenger spawned independently. Branch `contest-refactor`, base for this loop `0d964bb`.)
+(Discovery + Authority Map first-loop-only — see REVIEW_HISTORY.md loop 1. Provider claude_code; loop inline in main (Opus); reviewer + challenger spawned independently. Branch `contest-refactor`, base for this loop `bd81479`.)
 
 ---
 
 ## Contest Verdict
 **Good app, but not top-tier yet.**
 
-Loop 3's parse extraction (now visible) lifts architecture, simplicity, domain modeling, test strategy and credibility. This loop clears the dead wrapper. The remaining gap to top-tier is that `search_boards` still fuses filtering, the network date-scan and all terminal rendering in ~690 lines, with two duplicated render blocks.
+`search_boards` continues to decompose: this loop extracts the pure filter decision into a tested `_evaluate_filters`, leaving the terminal rendering as the last big inlined block. The filter half of F-006 is resolved; the render half (which also subsumes the duplicated render blocks of F-005) is the next and final structural lever.
 
 ## Scorecard (1-10)
-- Architecture quality: **6.5** | UP | `_parse_board_html` is a separate tested Module (commit 0d964bb); residual: filter/date-scan/render still fused (702-1396)
-- State management: **7.5** | SAME | one writer per concern; immutable instance attrs
-- Domain modeling: **6.5** | UP | `ParsedBoard` NamedTuple added (0d964bb); residual: `sounds_info` bare 2-tuples, `approx_source` stringly-typed
-- Data flow: **7.0** | SAME | named-field contracts; residual: `main` re-filters (~1585)
+- Architecture quality: **6.5** | SAME | filter extraction is this loop's fix (scored next loop); render still fused
+- State management: **7.5** | SAME | one writer per concern
+- Domain modeling: **6.5** | SAME | `BoardResult` + `ParsedBoard`; `sounds_info` deliberately a plain (id,title) 2-tuple (guardrail: don't force types)
+- Data flow: **7.0** | SAME | named-field contracts; residual: `main` re-filters (~1590)
 - Framework / platform: **7.0** | SAME | idiomatic stdlib; defensive sanitization; HTTPS
 - Concurrency: **9.5** | SAME | synchronous, no shared-mutable hazard. *Accepted residual:* `time.sleep` pacing (permanent carve-out)
-- Code simplicity: **6.0** | UP | `search_boards` shrank ~734→~694 (0d964bb); residual: dead wrapper (fixed this loop) + dup render (1184≈1361; 1274≈1386)
-- Test strategy: **7.0** | UP | `ParseBoardHtmlTests` added (0d964bb); 28 tests; residual: filter/date-scan/render paths untested
-- Overall credibility: **7.0** | UP | parse now test-backed; two named domain records; honest code
+- Code simplicity: **6.5** | UP | dead wrapper removed (commit bd81479); residual: ~678-line function still inlines date-scan + two render sections; dup render (1191≈1368; 1281≈1393)
+- Test strategy: **7.0** | SAME | 28 tests at loop start (6 filter tests added this loop, scored next); rendering untested
+- Overall credibility: **7.0** | SAME | two named records, parse test-backed; honest code
 
 ## Strengths That Matter
-- Two extraction loops (`BoardResult`, `_parse_board_html`) each behavior-preserving and independently reviewed — honest refactor history.
-- Pure helpers and per-board parse both fixture-tested at their real Interfaces.
+- Three behavior-preserving, independently-reviewed extractions so far (`BoardResult`, `_parse_board_html`, the filter evaluator) — a consistent, honest cadence.
+- The filter decision is now a pure function with full branch coverage incl. the date-only-when-basics-pass rule.
 - Synchronous design + defensive sanitization remain real strengths.
 
 ## Findings
 
-### Finding F1 (stable F-004): Dead pass-through wrapper `_fetch_last_modified` — *Priority 1, fixed this loop*
-**Evidence** — `soundboard-snag.py:319-322`; zero callers (incl. `debug_track_dates.py`). **Test failed** — Deletion test. **Severity** — Cosmetic.
-**Minimal correction path** — delete it (zero-risk subtractive win first, Meta-Rule 5).
+### Finding F1 (stable F-006): `search_boards` fuses filtering + date-scan + rendering — *Priority 1, filter half resolved, render half carried forward*
+**Evidence** — `soundboard-snag.py:725-1403`; inline results render `1339-1395` (remaining). **Test failed** — Shallow module. **Dependency** — `in-process`. **Severity** — Serious deduction.
+**Minimal correction path** — this loop: pure `_evaluate_filters` (skipped_buckets attribution kept at call site); next loop: render/format helpers (also folds F-005). No class hierarchy.
 
-### Finding F2 (stable F-006, new): `search_boards` still fuses filtering, network date-scan and all rendering (~690 lines)
-**Evidence** — `soundboard-snag.py:702-1396`; inline filter `1095-1150`; inline results render `1332-1390`. **Test failed** — Shallow module. **Dependency** — `in-process`. **Severity** — Serious deduction.
-**Minimal correction path** — over next loops, extract a pure filter evaluator + render/format helpers, each fixture-tested; do not extract the network date-scan; no class hierarchy.
-
-### Finding F3 (stable F-005): Date-display and skipped-breakdown rendering duplicated
-**Evidence** — `1169-1184`≈`1346-1361`; `1264-1274`≈`1376-1386`. **Test failed** — Deletion test. **Severity** — Noticeable weakness.
-**Minimal correction path** — fold into the F-006 render helpers.
+### Finding F2 (stable F-005): Date-display and skipped-breakdown rendering duplicated
+**Evidence** — `1176-1191`≈`1353-1368`; `1271-1281`≈`1383-1393`. **Test failed** — Deletion test. **Severity** — Noticeable weakness.
+**Minimal correction path** — fold into the F-006 render helpers next loop.
 
 ## Simplification Check
-- Structurally necessary: F-004 passes the Deletion test (zero callers → complexity vanishes).
+- Structurally necessary: `_evaluate_filters` passes Shallow-module test — small Interface (fields+thresholds in, (meets, failures) out), real branching behind it, pure decision separated from the side-effecting `skipped_buckets` attribution.
 - New seam justified: no.
-- Should NOT be done: touch `_fetch_last_modified_detailed`/cache (the live path).
-- Tests after fix: none needed; 28-test suite stays green as regression guard.
+- Should NOT be done: move `skipped_buckets` counters into the pure function; extract the network date-scan; add a class hierarchy.
+- Tests after fix: `EvaluateFiltersTests` (6 branch tests) at the new `_evaluate_filters` Interface.
 
 ## Improvement Backlog
-1. **Delete dead `_fetch_last_modified` (F-004)** — simplification, helpful. Zero-risk subtractive win. (simplicity +)
-2. **Extract pure filter evaluation + render/format helpers from `search_boards` (F-006)** — structural, needed for winning. Largest remaining lever. (architecture/simplicity/test_strategy +)
-3. **Fold duplicated date-display + skipped-breakdown render blocks (F-005)** — simplification, helpful; folded into F-006. (simplicity +)
+1. **Extract filter eval (this loop) then render/format helpers from `search_boards` (F-006)** — structural, needed for winning. (architecture/simplicity/test_strategy +)
+2. **Fold duplicated date-display + skipped-breakdown render blocks (F-005)** — simplification, helpful; folded into F-006 render extraction next loop. (simplicity +)
 
 ## Deepening Candidates
-- **Filter evaluation + result rendering** (friction in F-006): extract pure `_evaluate_filters(...)` → (meets, reasons) and `BoardResult`→str render helpers; fixture-tested; do not extract the network date-scan; no renderer class hierarchy.
+- **Result rendering** (friction in F-006): extract `BoardResult`→str render helpers + a shared `_format_updated_line`; fixture-tested; first step folds F-005's duplicated date block; no renderer class hierarchy.
 
 ## Builder Notes
-1. **Clear the certain subtractive win first** — take the dead-code deletion in its own commit before the larger refactor; it shrinks the surface to reason about.
-2. **Deletion test before removing any wrapper** — grep every caller across the whole repo (incl. standalone scripts) first.
-3. **Name the next structural target precisely** — re-derive the residual into a concrete finding with file:line (which sub-blocks are still fused), not a vague "it's big".
+1. **Separate the pure decision from its side effect** — return the decision + structured failure info from a pure function; keep the mutation at the call site, driven by the returned info.
+2. **Preserve a subtle ordering rule explicitly** — encode the implicit dependency (date filter only when basics pass) and pin it with a test.
+3. **Chip a large finding across loops with shrinking, named evidence** — resolve one slice per loop, mark carried_forward, re-cite the narrowed residual.
 
 ## Final Judge Narrative
-Place — a good app, climbing steadily. Loop 3's parse extraction shows up across five dimensions; this loop takes the certain subtractive win. The honest residual is named precisely: `search_boards` still fuses filter evaluation and two render sections in ~690 lines, with duplicated render blocks. Ownership and concurrency trustworthy. Next: extract a pure filter evaluator and render helpers while resisting any renderer class hierarchy the single-file design does not need.
+Place — a good app, decomposing steadily and honestly. This loop extracts the filter decision into a pure, fully-branch-tested `_evaluate_filters`, cleanly separated from the `skipped_buckets` side effect. F-006 is half done; the remaining slice is the terminal rendering (which absorbs F-005's duplicates). Ownership and concurrency stay trustworthy. Resisting over-typing a 2-tuple and keeping the side effect at the call site is exactly the anti-overengineering the rubric rewards.
 
-## Loop 4 Result
-Deleted the dead pass-through wrapper `_fetch_last_modified` (4 lines + a surrounding blank line); the live path uses `_fetch_last_modified_detailed` and the `fetch_last_modified_cached` closure. `py_compile` passes; `python3 -m unittest test_soundboard_snag` runs 28 tests, all OK; `--help` exits 0; grep confirms the non-detailed wrapper no longer appears and `debug_track_dates.py` never referenced it; net −6 lines. Targeted finding **F-004 is resolved**. No scorecard regression.
+## Loop 5 Result
+Extracted a pure `_evaluate_filters(...)` from `search_boards`' inline filter block; it returns `(meets, failures)` with each failure a `(bucket_key, reason)` tuple. `search_boards` now calls it, builds `filter_reasons` from the failures, and keeps the `skipped_buckets` attribution (gated on `has_downloads`) at the call site. Added `EvaluateFiltersTests` (6 tests) covering every branch incl. the date-only-when-basics-pass rule. `py_compile` passes; `python3 -m unittest test_soundboard_snag` runs 34 tests, all OK; `--help` exits 0. Extraction reproduces the original branch logic + side-effect attribution exactly; grep confirms inline filter logic gone from `search_boards`; function shrank to ~678 lines. Targeted finding **F-006: filter half resolved, render half carried forward**. No scorecard regression.
 
-## Loop 4 Implementation Review
-Independent reviewer (Sonnet, read-only): **approved**. Reality passed (wrapper gone; zero references to the non-detailed name in either file), Honesty passed (purely subtractive; `_fetch_last_modified_detailed` + cache closure untouched), Regression passed (no dangling reference; live path intact). 0 regressions, 0 conditions, 1 round.
+## Loop 5 Implementation Review
+Independent reviewer (Sonnet, read-only, scoped to the filter slice): **approved**. Reality passed (`_evaluate_filters` exists; inline filter logic gone), Honesty passed (behavior-preserving: independent views/sounds failures, date-only-when-basics-pass preserved, byte-identical reasons, side effect kept at call site), Regression passed (`meets_filters`/`filter_reasons` still correct downstream). 0 regressions, 0 conditions, 1 round.

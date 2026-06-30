@@ -193,7 +193,7 @@
       "severity": "Noticeable weakness",
       "first_seen_loop": 1,
       "first_seen_sha": "765b17b82f110f53ab23cc09718cfb630acf3a52",
-      "last_seen_loop": 4,
+      "last_seen_loop": 5,
       "occurrences": [
         {
           "loop": 1,
@@ -238,6 +238,17 @@
             "evidence_paths_hash": "sha256:34a5ba6d5b33a8ac284901fa623406ae3028832a6a4062ef90070734f557b0e6"
           },
           "attempted_remedy_hash": "sha256:319ea554fc9b4eed4f3f39ed61871847e4067a253497eb32ce8a114fa2031dcf"
+        },
+        {
+          "loop": 5,
+          "loop_local_id": "F2",
+          "status": "open",
+          "sha": "bd814795567cbf00d3c80d6a7a080c25a343ad32",
+          "fingerprint": {
+            "claim_consequence_hash": "sha256:fc6b701f55f9806faca33ff2a2895300b6d5b3012072373126e5247f67ff858a",
+            "evidence_paths_hash": "sha256:34a5ba6d5b33a8ac284901fa623406ae3028832a6a4062ef90070734f557b0e6"
+          },
+          "attempted_remedy_hash": "sha256:319ea554fc9b4eed4f3f39ed61871847e4067a253497eb32ce8a114fa2031dcf"
         }
       ]
     },
@@ -254,13 +265,24 @@
       "severity": "Serious deduction",
       "first_seen_loop": 4,
       "first_seen_sha": "0d964bb3bcb3ff2f9b31e3281e7c471fc99711bc",
-      "last_seen_loop": 4,
+      "last_seen_loop": 5,
       "occurrences": [
         {
           "loop": 4,
           "loop_local_id": "F2",
           "status": "open",
           "sha": "0d964bb3bcb3ff2f9b31e3281e7c471fc99711bc",
+          "fingerprint": {
+            "claim_consequence_hash": "sha256:14b26fc209316d7c7258e88cd16547b52f0a0204a32182df067588e9f8b4e363",
+            "evidence_paths_hash": "sha256:851dbaad079050426eaa849db9d9867839ed2fd478bb8fa01d7c1a362eba3d49"
+          },
+          "attempted_remedy_hash": "sha256:370b35de02bed4d39236be95d7ff86854e1d95ff6cbecf00403531f6260a4e3d"
+        },
+        {
+          "loop": 5,
+          "loop_local_id": "F1",
+          "status": "open",
+          "sha": "bd814795567cbf00d3c80d6a7a080c25a343ad32",
           "fingerprint": {
             "claim_consequence_hash": "sha256:14b26fc209316d7c7258e88cd16547b52f0a0204a32182df067588e9f8b4e363",
             "evidence_paths_hash": "sha256:851dbaad079050426eaa849db9d9867839ed2fd478bb8fa01d7c1a362eba3d49"

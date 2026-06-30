@@ -242,5 +242,47 @@ class ParseBoardHtmlTests(unittest.TestCase):
         self.assertEqual(p.sounds_info, [])
 
 
+class EvaluateFiltersTests(unittest.TestCase):
+    def test_no_filters_always_passes(self):
+        meets, failures = sb._evaluate_filters(0, 0, None, 0, 0, None, None)
+        self.assertTrue(meets)
+        self.assertEqual(failures, [])
+
+    def test_views_and_sounds_can_both_fail(self):
+        meets, failures = sb._evaluate_filters(5, 1, None, 10, 3, None, None)
+        self.assertFalse(meets)
+        self.assertEqual([k for k, _ in failures], ["views", "sounds"])
+
+    def test_passing_basic_filters(self):
+        meets, failures = sb._evaluate_filters(100, 20, None, 10, 3, None, None)
+        self.assertTrue(meets)
+        self.assertEqual(failures, [])
+
+    def test_date_filter_only_when_basics_pass(self):
+        threshold = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        # basics fail -> date is NOT evaluated (only the views failure reported)
+        meets, failures = sb._evaluate_filters(1, 20, None, 10, 0, threshold, 7)
+        self.assertFalse(meets)
+        self.assertEqual([k for k, _ in failures], ["views"])
+
+    def test_updated_unknown_and_too_old(self):
+        threshold = datetime(2025, 6, 1, tzinfo=timezone.utc)
+        meets, failures = sb._evaluate_filters(100, 20, None, 0, 0, threshold, 7)
+        self.assertFalse(meets)
+        self.assertEqual([k for k, _ in failures], ["updated_unknown"])
+
+        old = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        meets, failures = sb._evaluate_filters(100, 20, old, 0, 0, threshold, 7)
+        self.assertFalse(meets)
+        self.assertEqual([k for k, _ in failures], ["updated_too_old"])
+
+    def test_recent_enough_passes_date_filter(self):
+        threshold = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        recent = datetime(2025, 3, 1, tzinfo=timezone.utc)
+        meets, failures = sb._evaluate_filters(100, 20, recent, 0, 0, threshold, 30)
+        self.assertTrue(meets)
+        self.assertEqual(failures, [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
