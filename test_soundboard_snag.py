@@ -473,5 +473,57 @@ class SearchBoardsOrchestrationTests(unittest.TestCase):
         self.assertNotIn(f"{B}/sb/b", calls)  # stopped before fetching the second board
 
 
+def _board_item(sid, title, downloadable):
+    dl = f'<a href="/sb/sound/{sid}" class="btn-download-track">d</a>' if downloadable else ""
+    return (
+        f'<div class="item r" data-src="{sid}">{dl}'
+        f'<div class="item-title text-ellipsis"><span>{title}</span></div></div>'
+    )
+
+
+class SnagPipelineTests(unittest.TestCase):
+    """Exercise SoundboardSnag.snag() guard + abort logic offline via the injected fetcher."""
+
+    def _snag(self, html, **kwargs):
+        return sb.SoundboardSnag(
+            "https://www.soundboard.com/sb/test", fetcher=lambda url: html, **kwargs)
+
+    def test_play_only_board_raises(self):
+        html = _board_item("1", "S1", downloadable=False) + _board_item("2", "S2", downloadable=False)
+        snag = self._snag(html)
+        with redirect_stdout(io.StringIO()), self.assertRaises(RuntimeError) as cm:
+            snag.snag()
+        self.assertIn("downloads disabled", str(cm.exception))
+
+    def test_no_audio_found_raises(self):
+        snag = self._snag("<html><body>nothing here</body></html>")
+        with redirect_stdout(io.StringIO()), self.assertRaises(RuntimeError) as cm:
+            snag.snag()
+        self.assertIn("No audio files found", str(cm.exception))
+
+    def test_consecutive_failure_abort(self):
+        import shutil
+        import tempfile
+        html = "".join(_board_item(str(i), f"S{i}", downloadable=True) for i in range(1, 6))
+        root = tempfile.mkdtemp()
+        try:
+            snag = self._snag(html, download_root=root)
+            with mock.patch.object(snag, "_snag_sound", return_value=(False, "boom")) as m, \
+                    mock.patch("time.sleep"), redirect_stdout(io.StringIO()):
+                snag.snag()
+            # 5 downloadable sounds, but aborts after 2 consecutive failures
+            self.assertEqual(m.call_count, 2)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_fetch_page_wraps_httperror_as_runtimeerror(self):
+        def boom(url):
+            raise URLError("dns fail")
+        snag = sb.SoundboardSnag("https://www.soundboard.com/sb/test", fetcher=boom)
+        with self.assertRaises(RuntimeError) as cm:
+            snag._fetch_page()
+        self.assertIn("Network error", str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

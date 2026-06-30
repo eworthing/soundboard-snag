@@ -465,13 +465,16 @@ class JsonlLogger:
 class SoundboardSnag:
     """Snags and manages soundboard audio files."""
 
-    def __init__(self, soundboard_url, download_root=None):
+    def __init__(self, soundboard_url, download_root=None, fetcher=None):
         """Initialize snag tool with a soundboard URL.
 
         Args:
             soundboard_url: A string URL pointing to a soundboard.com page.
                 Expected format: https://www.soundboard.com/sb/boardname
             download_root: Optional root directory for downloads. If None, uses CWD.
+            fetcher: Optional callable(url) -> decoded page text. Defaults to
+                _http_get (real network). Tests inject an in-memory fake to
+                exercise snag()'s guard and abort logic offline.
 
         Raises:
             ValueError: If the URL format is invalid or board name cannot
@@ -481,6 +484,7 @@ class SoundboardSnag:
         self.board_slug, self.board_name = self._extract_board_slug_and_name()
         self.base_url = BASE_URL
         self.download_root = download_root if download_root else os.getcwd()
+        self.fetcher = fetcher if fetcher is not None else _http_get
 
     def _extract_board_slug_and_name(self):
         """Extract the board slug (URL-safe) and a display name from the URL path.
@@ -520,23 +524,13 @@ class SoundboardSnag:
             The page HTML content as a UTF-8 decoded string.
 
         Raises:
-            RuntimeError: If the page cannot be retrieved (HTTP errors, network
-                errors, or non-200 status codes).
+            RuntimeError: If the page cannot be retrieved (HTTP errors or
+                network errors).
         """
         page_url = self._board_url()
 
-        # Create request with User-Agent to avoid being blocked
-        req = Request(page_url, headers={'User-Agent': USER_AGENT})
-
         try:
-            with urlopen(req, timeout=HTTP_TIMEOUT) as response:
-                if response.getcode() != 200:
-                    raise RuntimeError(f"Unable to retrieve soundboard page. HTTP status: {response.getcode()}")
-
-                # Decode bytes to string
-                content = response.read().decode('utf-8')
-                return content
-
+            return self.fetcher(page_url)
         except HTTPError as e:
             raise RuntimeError(f"HTTP Error {e.code}: {e.reason}")
         except URLError as e:
