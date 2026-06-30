@@ -111,6 +111,13 @@ python3 soundboard-snag.py
 | `--max` | Maximum boards to check in search (default: 20) |
 | `--min-views` | Minimum views required (default: 10, use 0 for no filter) |
 | `--min-sounds` | Minimum sounds required (default: 3, use 0 for no filter) |
+| `--include-dates` | Show approximate updated dates via Last-Modified headers |
+| `--recent-days N` | Only show boards updated within the last N days (approx) |
+| `--sort {views,recent}` | Sort search results by views (default) or recent update date |
+| `--date-sample-size N` | Track headers to check per board for dates (0 = all, default: 0) |
+| `--no-progress` | Disable realtime progress updates during searches |
+| `--verbose` | Show detailed steps, detection, parsing, and HTTP date checks |
+| `--log-file PATH` | Write a JSONL log of actions/events to a file |
 | `--debug` | Show all boards analyzed, including filtered ones |
 
 ## Examples

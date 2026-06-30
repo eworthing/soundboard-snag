@@ -157,9 +157,14 @@ class ExtractFilenameFromHeadersTests(_SnagHelpersMixin):
 
 
 class SanitizeFilenameTests(_SnagHelpersMixin):
-    def test_title_cases_all_lower_or_all_upper(self):
+    def test_title_cases_all_lowercase_only(self):
+        # all-lowercase is title-cased for readability
         self.assertEqual(self.snag._sanitize_filename("hello world.mp3", "1", ""), "Hello World.mp3")
-        self.assertEqual(self.snag._sanitize_filename("MY SOUND.mp3", "1", ""), "My Sound.mp3")
+
+    def test_all_uppercase_preserved_as_acronym(self):
+        # all-uppercase is preserved (e.g., "NASA", "HTML"), not title-cased
+        self.assertEqual(self.snag._sanitize_filename("MY SOUND.mp3", "1", ""), "MY SOUND.mp3")
+        self.assertEqual(self.snag._sanitize_filename("NASA.mp3", "1", ""), "NASA.mp3")
 
     def test_mixed_case_preserved(self):
         self.assertEqual(self.snag._sanitize_filename("Already Mixed.mp3", "1", ""), "Already Mixed.mp3")
@@ -168,8 +173,16 @@ class SanitizeFilenameTests(_SnagHelpersMixin):
         self.assertEqual(self.snag._sanitize_filename("Don&#039;t Stop.mp3", "1", ""), "Don't Stop.mp3")
 
     def test_windows_reserved_name_is_prefixed(self):
-        self.assertEqual(self.snag._sanitize_filename("CON.mp3", "1", ""), "_Con.mp3")
-        self.assertEqual(self.snag._sanitize_filename("PRN.mp3", "1", ""), "_Prn.mp3")
+        # "CON" is all-uppercase -> preserved -> still matched as reserved -> prefixed
+        self.assertEqual(self.snag._sanitize_filename("CON.mp3", "1", ""), "_CON.mp3")
+        self.assertEqual(self.snag._sanitize_filename("PRN.mp3", "1", ""), "_PRN.mp3")
+
+    def test_long_filename_truncated_to_255_bytes(self):
+        out = self.snag._sanitize_filename("a" * 400 + ".mp3", "1", "")
+        # title-cased "Aaaa...", then truncated so name+ext stays within 255 bytes
+        self.assertTrue(out.endswith(".mp3"))
+        self.assertLessEqual(len(out.encode("utf-8")), 255)
+        self.assertGreater(len(out), 200)
 
     def test_empty_falls_back_to_page_title_then_audio_id(self):
         self.assertEqual(self.snag._sanitize_filename("", "42", "My Title"), "My Title.mp3")
@@ -510,9 +523,11 @@ class SnagPipelineTests(unittest.TestCase):
             snag = self._snag(html, download_root=root)
             with mock.patch.object(snag, "_snag_sound", return_value=(False, "boom")) as m, \
                     mock.patch("time.sleep"), redirect_stdout(io.StringIO()):
-                snag.snag()
+                result = snag.snag()
             # 5 downloadable sounds, but aborts after 2 consecutive failures
             self.assertEqual(m.call_count, 2)
+            # snag() reports failure (returns False) on the early-exit path
+            self.assertFalse(result)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

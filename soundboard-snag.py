@@ -333,9 +333,9 @@ def _extract_board_slugs_from_search_html(html_content):
     )
     return [html.unescape(s).strip() for s in slugs if s and s.strip()]
 
-# ANSI color codes (cross-platform compatible)
+# ANSI color codes (disabled when stdout is not a TTY)
 class Colors:
-    """ANSI color codes for terminal output."""
+    """ANSI color codes for terminal output (disabled when stdout is not a TTY)."""
     RESET = '\033[0m'
     BOLD = '\033[1m'
 
@@ -344,16 +344,19 @@ class Colors:
     GREEN = '\033[92m'
     YELLOW = '\033[93m'
     BLUE = '\033[94m'
-    MAGENTA = '\033[95m'
     CYAN = '\033[96m'
-    WHITE = '\033[97m'
     GRAY = '\033[90m'
 
-    # Background colors (optional)
-    BG_RED = '\033[101m'
-    BG_GREEN = '\033[102m'
-    BG_YELLOW = '\033[103m'
-    BG_BLUE = '\033[104m'
+
+def _init_colors():
+    """Disable ANSI colors when stdout is not a TTY (e.g., piped or redirected)."""
+    if not hasattr(sys.stdout, 'isatty') or not sys.stdout.isatty():
+        for attr in list(vars(Colors)):
+            if not attr.startswith('_'):
+                setattr(Colors, attr, '')
+
+
+_init_colors()
 
 
 def _parse_http_datetime(value):
@@ -513,9 +516,15 @@ class SoundboardSnag:
         return f"{self.base_url}/sb/{_quote_path_segment(self.board_slug)}"
 
     def _board_output_dirname(self):
-        # Avoid accidental nested directories if a board name includes path separators.
+        # Sanitize board name for use as a directory name (cross-platform).
         name = re.sub(r'[\\/]+', '_', self.board_name).strip()
-        return name if name else re.sub(r'[\\/]+', '_', self.board_slug).strip() or 'soundboard'
+        if not name:
+            name = re.sub(r'[\\/]+', '_', self.board_slug).strip() or 'soundboard'
+        # Remove characters invalid on Windows/macOS/Linux filesystems
+        name = re.sub(r'[<>:"|?*]', '-', name)
+        name = re.sub(r'[\x00-\x1f\x7f]', '', name)
+        name = name.rstrip('. ')
+        return name or 'soundboard'
 
     def _fetch_page(self):
         """Fetch the soundboard page content.
@@ -606,14 +615,22 @@ class SoundboardSnag:
         # Strip trailing dots and spaces from name (Windows requirement)
         name = name.rstrip('. ')
 
-        # Title case if all lowercase or all uppercase (improves readability)
-        if name and (name.islower() or name.isupper()):
+        # Title case if all lowercase (improves readability).
+        # Skip all-uppercase names to preserve acronyms (e.g., "NASA", "HTML").
+        if name and name.islower():
             name = name.title()
 
         # Handle Windows reserved names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
         name_upper = name.upper()
         if name_upper in WINDOWS_RESERVED_NAMES:
             name = f'_{name}'  # Prefix with underscore to make it safe
+
+        # Truncate to stay within filesystem limits (255 bytes max on most OS)
+        max_name_len = 255 - len(ext.encode('utf-8'))
+        if len(name.encode('utf-8')) > max_name_len:
+            while len(name.encode('utf-8')) > max_name_len and name:
+                name = name[:-1]
+            name = name.rstrip('. ')
 
         # Reconstruct filename
         cleaned = name + ext
@@ -668,13 +685,20 @@ class SoundboardSnag:
                 if os.path.isfile(filepath):
                     return None, final_filename  # None indicates skip
 
-                # Write file in chunks
-                with open(filepath, 'wb') as f:
-                    while True:
-                        chunk = response.read(CHUNK_SIZE)
-                        if not chunk:
-                            break
-                        f.write(chunk)
+                # Write file in chunks; remove partial file on failure
+                try:
+                    with open(filepath, 'wb') as f:
+                        while True:
+                            chunk = response.read(CHUNK_SIZE)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                except BaseException:
+                    try:
+                        os.remove(filepath)
+                    except OSError:
+                        pass
+                    raise
 
                 file_size_kb = os.path.getsize(filepath) / 1024
                 return True, (final_filename, file_size_kb)
@@ -683,7 +707,7 @@ class SoundboardSnag:
             return False, f"HTTP {e.code}: {e.reason}"
         except URLError as e:
             return False, f"Network error: {e.reason}"
-        except Exception as e:
+        except OSError as e:
             return False, str(e)
 
     def snag(self):
@@ -730,6 +754,7 @@ class SoundboardSnag:
         failed_count = 0
         consecutive_failures = 0
         max_consecutive_failures = 2  # Exit if this many failures in a row
+        early_exit = False
 
         for i, (sound_id, page_title) in enumerate(sound_items, 1):
             print(f"{Colors.GRAY}[{i}/{len(sound_items)}]{Colors.RESET} Snagging audio ID {Colors.CYAN}{sound_id}{Colors.RESET}...")
@@ -772,6 +797,7 @@ class SoundboardSnag:
                             except OSError:
                                 pass  # Directory not empty or other error, leave it
 
+                    early_exit = True
                     break
 
             # Add delay between downloads to be respectful to server
@@ -789,7 +815,7 @@ class SoundboardSnag:
             if not has_downloads:
                 print(f"  Note: This board has downloads disabled by the owner.")
 
-        return True
+        return not early_exit
 
 
 
@@ -1613,7 +1639,7 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
                 print(f"{'='*80}{Colors.RESET}\n")
 
                 try:
-                    board_url = f"{BASE_URL}/sb/{board.board_name}"
+                    board_url = f"{BASE_URL}/sb/{_quote_path_segment(board.board_name)}"
                     snag_tool = SoundboardSnag(board_url, download_root=download_root)
                     success = snag_tool.snag()
 
@@ -1694,12 +1720,20 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
         print("NOTE: When using VS Code debugger, set arguments in launch.json\n")
 
         try:
-            soundboard_url = input("URL: ").strip()
+            user_input = input("URL or board name: ").strip()
         except EOFError:
             print("\nError: No input received.")
             print("For debugging, add arguments to launch configuration:")
             print('  "args": ["--url", "https://www.soundboard.com/sb/starwars"]')
             sys.exit(1)
+
+        # Detect if user entered a plain board name (no scheme/host)
+        if user_input and not user_input.startswith(('http://', 'https://')):
+            soundboard_url = f"{BASE_URL}/sb/{_quote_path_segment(user_input)}"
+            print(f"{Colors.CYAN}Using board name: {user_input}{Colors.RESET}")
+            print(f"{Colors.GRAY}Constructed URL: {soundboard_url}{Colors.RESET}\n")
+        else:
+            soundboard_url = user_input
 
     # Run snag tool
     try:
@@ -1709,8 +1743,8 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
         if not success:
             sys.exit(1)
 
-        # Interactive mode: wait for keypress
-        if not args.url:
+        # Interactive mode: wait for keypress (only when no CLI args were given)
+        if not args.url and not args.board:
             input("\nComplete. Press Enter to exit...")
 
     except (ValueError, RuntimeError) as e:
