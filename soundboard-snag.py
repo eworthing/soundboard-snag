@@ -268,6 +268,19 @@ def _render_board_lines(board, stats, include_dates):
     return lines
 
 
+def _http_get(url):
+    """Fetch a URL and return its decoded text (the default page fetcher).
+
+    This is the production adapter of the fetch seam: ``search_boards`` accepts a
+    ``fetch`` callable so tests can inject an in-memory fake instead of hitting
+    the network. It raises ``HTTPError`` / ``URLError`` exactly like the inline
+    ``urlopen`` it replaced, so existing error handling is unchanged.
+    """
+    req = Request(url, headers={'User-Agent': USER_AGENT})
+    with urlopen(req, timeout=HTTP_TIMEOUT) as response:
+        return response.read().decode('utf-8')
+
+
 def _quote_path_segment(value):
     """Quote a URL path segment without double-encoding existing percent escapes."""
     # Keep '%' safe so values like "PRINS%20JULIUS" aren't double-encoded.
@@ -799,6 +812,7 @@ def search_boards(
     progress=False,
     verbose=False,
     logger=None,
+    fetch=None,
 ):
     """Search for soundboards with detailed information including filenames, category, and tags.
 
@@ -819,9 +833,14 @@ def search_boards(
         progress: If True, show realtime progress updates while searching
         verbose: If True, print detailed per-step output (requests, parsing, filters, dates)
         logger: Optional JsonlLogger for capturing structured run details
+        fetch: Optional callable(url) -> decoded page text. Defaults to _http_get
+            (real network). Tests inject an in-memory fake to exercise the
+            orchestration (pagination, dedup, early-stop, near-misses) offline.
     Returns:
         List[BoardResult]: one named record per board (fields accessed by name).
     """
+    if fetch is None:
+        fetch = _http_get
     encoded_query = quote(query)
 
     def vprint(message):
@@ -961,9 +980,7 @@ def search_boards(
             print(f"{Colors.GRAY}Searching...{Colors.RESET}\n")
 
         try:
-            req = Request(search_url, headers={'User-Agent': USER_AGENT})
-            with urlopen(req, timeout=HTTP_TIMEOUT) as response:
-                html_content = response.read().decode('utf-8')
+            html_content = fetch(search_url)
             if logger:
                 logger.event("search_page_fetch_ok", page=page, url=search_url, bytes=len(html_content))
         except (HTTPError, URLError) as e:
@@ -1027,10 +1044,7 @@ def search_boards(
             try:
                 board_url = f"{BASE_URL}/sb/{_quote_path_segment(board_name)}"
                 vprint(f"Fetching board page: {board_url}")
-                req = Request(board_url, headers={'User-Agent': USER_AGENT})
-
-                with urlopen(req, timeout=HTTP_TIMEOUT) as response:
-                    board_html = response.read().decode('utf-8')
+                board_html = fetch(board_url)
                 if logger:
                     logger.event("board_fetch_ok", board=board_name, url=board_url, bytes=len(board_html))
 

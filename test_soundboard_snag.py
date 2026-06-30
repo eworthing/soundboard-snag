@@ -16,10 +16,14 @@ the deterministic helpers so future refactors get a regression signal. Run with:
 """
 
 import importlib.util
+import io
 import os
 import re
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
+from unittest import mock
+from urllib.error import URLError
 
 
 def _load_module():
@@ -373,6 +377,100 @@ class RenderBoardLinesTests(unittest.TestCase):
     def test_no_sample_section_when_empty(self):
         joined = "\n".join(self._plain(sb._render_board_lines(_make_board(sounds_info=[]), None, include_dates=False)))
         self.assertNotIn("Sample files", joined)
+
+
+def _board_page(sounds, views, has_downloads=True):
+    """Build minimal board-page HTML. ``sounds`` is a list of (id, title)."""
+    chunks = []
+    for sid, title in sounds:
+        dl = f'<a href="/sb/sound/{sid}" class="btn-download-track">dl</a>' if has_downloads else ""
+        chunks.append(
+            f'<div class="item r" data-src="{sid}">{dl}'
+            f'<div class="item-title text-ellipsis"><span>{title}</span></div></div>'
+        )
+    chunks.append(f'<strong>Views: </strong><span class="text-muted"> {views}</span>')
+    return "".join(chunks)
+
+
+def _search_page(slugs):
+    return "".join(f'<a href="/sb/{s}">{s}</a>' for s in slugs)
+
+
+def _run_search(fake_pages, **kwargs):
+    """Drive search_boards with an in-memory fetcher over ``fake_pages`` (url -> html)."""
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        if url in fake_pages:
+            return fake_pages[url]
+        raise URLError("no such page")  # caught by search_boards' page/board error handling
+
+    params = dict(max_results=10, min_views=0, min_sounds=0, include_dates=False,
+                  progress=False, verbose=False)
+    params.update(kwargs)
+    with mock.patch("time.sleep"), redirect_stdout(io.StringIO()):
+        results = sb.search_boards("q", fetch=fetch, **params)
+    return results, calls
+
+
+B = sb.BASE_URL
+
+
+class SearchBoardsOrchestrationTests(unittest.TestCase):
+    """Exercise the network orchestration offline via the injected fetch seam."""
+
+    def test_returns_downloadable_sorted_by_views(self):
+        pages = {
+            f"{B}/search/q": _search_page(["alpha", "beta"]),
+            f"{B}/sb/alpha": _board_page([("1", "A1"), ("2", "A2")], "50"),
+            f"{B}/sb/beta": _board_page([("3", "B1"), ("4", "B2"), ("5", "B3")], "100"),
+        }
+        results, _ = _run_search(pages)
+        self.assertEqual([b.board_name for b in results], ["beta", "alpha"])  # 100 before 50
+        self.assertTrue(all(b.has_downloads for b in results))
+        self.assertEqual(results[0].views_int, 100)
+
+    def test_play_only_board_excluded(self):
+        pages = {
+            f"{B}/search/q": _search_page(["dl", "playonly"]),
+            f"{B}/sb/dl": _board_page([("1", "X")], "10", has_downloads=True),
+            f"{B}/sb/playonly": _board_page([("2", "Y")], "10", has_downloads=False),
+        }
+        results, _ = _run_search(pages)
+        self.assertEqual([b.board_name for b in results], ["dl"])
+
+    def test_pagination_collects_across_pages(self):
+        pages = {
+            f"{B}/search/q": _search_page(["a", "b"]),
+            f"{B}/search/q?page=2": _search_page(["c"]),
+            f"{B}/sb/a": _board_page([("1", "x")], "30"),
+            f"{B}/sb/b": _board_page([("2", "y")], "20"),
+            f"{B}/sb/c": _board_page([("3", "z")], "40"),
+        }
+        results, _ = _run_search(pages)
+        self.assertEqual(sorted(b.board_name for b in results), ["a", "b", "c"])
+        self.assertEqual(results[0].board_name, "c")  # highest views (40)
+
+    def test_min_views_filter_excludes_low(self):
+        pages = {
+            f"{B}/search/q": _search_page(["big", "small"]),
+            f"{B}/sb/big": _board_page([("1", "x")], "500"),
+            f"{B}/sb/small": _board_page([("2", "y")], "5"),
+        }
+        results, _ = _run_search(pages, min_views=100)
+        self.assertEqual([b.board_name for b in results], ["big"])
+
+    def test_early_stop_at_max_results(self):
+        pages = {
+            f"{B}/search/q": _search_page(["a", "b"]),
+            f"{B}/sb/a": _board_page([("1", "x")], "30"),
+            f"{B}/sb/b": _board_page([("2", "y")], "20"),
+        }
+        results, calls = _run_search(pages, max_results=1)
+        self.assertEqual(len(results), 1)
+        self.assertIn(f"{B}/sb/a", calls)
+        self.assertNotIn(f"{B}/sb/b", calls)  # stopped before fetching the second board
 
 
 if __name__ == "__main__":

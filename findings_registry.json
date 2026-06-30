@@ -337,13 +337,24 @@
       "severity": "Serious deduction",
       "first_seen_loop": 7,
       "first_seen_sha": "41ec0c76f882caddef9f65d78dd259f48aca02fc",
-      "last_seen_loop": 7,
+      "last_seen_loop": 8,
       "occurrences": [
         {
           "loop": 7,
           "loop_local_id": "F2",
           "status": "open",
           "sha": "41ec0c76f882caddef9f65d78dd259f48aca02fc",
+          "fingerprint": {
+            "claim_consequence_hash": "sha256:d0cc10b23faec05704e5c57a5d8c915a63ff1e77a1f73c21ccd48f63157b5dfb",
+            "evidence_paths_hash": "sha256:27f08e1ae5733f09441f53de99e3d7e0330226aeae56217c461a8f07766d2562"
+          },
+          "attempted_remedy_hash": "sha256:6d142ca5c33c17b430e505b9f1161e60f6f5a868bdd47ca570152ca8e96033d3"
+        },
+        {
+          "loop": 8,
+          "loop_local_id": "F1",
+          "status": "open",
+          "sha": "33d60cdc92b5c1f2f95c64a53110461fa0ab2cf8",
           "fingerprint": {
             "claim_consequence_hash": "sha256:d0cc10b23faec05704e5c57a5d8c915a63ff1e77a1f73c21ccd48f63157b5dfb",
             "evidence_paths_hash": "sha256:27f08e1ae5733f09441f53de99e3d7e0330226aeae56217c461a8f07766d2562"
@@ -365,13 +376,24 @@
       "severity": "Cosmetic for contest",
       "first_seen_loop": 7,
       "first_seen_sha": "41ec0c76f882caddef9f65d78dd259f48aca02fc",
-      "last_seen_loop": 7,
+      "last_seen_loop": 8,
       "occurrences": [
         {
           "loop": 7,
           "loop_local_id": "F3",
           "status": "open",
           "sha": "41ec0c76f882caddef9f65d78dd259f48aca02fc",
+          "fingerprint": {
+            "claim_consequence_hash": "sha256:d98ee788f03d086a0970f96604dc84772e7395d5cbe630d97b4184a4794db12f",
+            "evidence_paths_hash": "sha256:5a07e0d969f4b2acc3dff7eb240136f3c85aab0f1bab74fbcc0795c32f04b566"
+          },
+          "attempted_remedy_hash": "sha256:1d18fad7eb4c3e0ab51f44bb08d3d110f779d0a87ff37a086a9151b6a105505a"
+        },
+        {
+          "loop": 8,
+          "loop_local_id": "F2",
+          "status": "open",
+          "sha": "33d60cdc92b5c1f2f95c64a53110461fa0ab2cf8",
           "fingerprint": {
             "claim_consequence_hash": "sha256:d98ee788f03d086a0970f96604dc84772e7395d5cbe630d97b4184a4794db12f",
             "evidence_paths_hash": "sha256:5a07e0d969f4b2acc3dff7eb240136f3c85aab0f1bab74fbcc0795c32f04b566"
