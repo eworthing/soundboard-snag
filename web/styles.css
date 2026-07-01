@@ -235,6 +235,46 @@ body {
   white-space: nowrap;
 }
 
+/* Stop button — shuts the local server down (the app's quit affordance). */
+.device-header__stop {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--rec);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--rec) 45%, transparent);
+  border-radius: 6px;
+  padding: 3px 9px;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background 160ms var(--ease-enter), border-color 160ms var(--ease-enter);
+}
+.device-header__stop:hover {
+  background: color-mix(in srgb, var(--rec) 14%, transparent);
+  border-color: var(--rec);
+}
+.device-header__stop:focus-visible {
+  outline: 2px solid var(--pad-lit);
+  outline-offset: 2px;
+}
+
+/* Terminal "server stopped" screen (replaces the page after Stop). */
+.stopped-screen {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  text-align: center;
+  font-family: var(--font-mono);
+  color: var(--text);
+  padding: var(--sp-4);
+}
+.stopped-screen strong { font-size: 1.1rem; color: var(--led-amber); }
+.stopped-screen span { color: var(--text-dim); font-size: 0.8rem; }
+
 /* ── Power-on animation: LED flicker → command-bar backlight ── */
 @keyframes led-flicker {
   0%   { opacity: 0; }
@@ -963,11 +1003,31 @@ body {
   font-family: var(--font-mono);
   font-size: 0.62rem;
   color: var(--text-dim);
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: default;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: border-color 160ms var(--ease-enter), color 160ms var(--ease-enter), background 160ms;
 }
+.sound-chip::before { content: "\2193  "; opacity: 0.55; }   /* ↓ download affordance */
+.sound-chip:hover {
+  color: var(--text);
+  border-color: var(--led-amber);
+  background: color-mix(in srgb, var(--led-amber) 10%, var(--chassis));
+}
+.sound-chip:focus-visible { outline: 2px solid var(--pad-lit); outline-offset: 2px; }
+.sound-chip.is-downloading { color: var(--text); border-color: var(--pad-lit); opacity: 0.75; }
+.sound-chip.is-downloading::before { content: "\2026  "; }   /* … */
+.sound-chip.is-saved {
+  color: var(--pad-lit);
+  border-color: color-mix(in srgb, var(--pad-lit) 55%, transparent);
+}
+.sound-chip.is-saved::before { content: "\2713  "; }          /* ✓ */
+.sound-chip.is-error { color: var(--rec); border-color: color-mix(in srgb, var(--rec) 55%, transparent); }
+.sound-chip.is-error::before { content: "\2717  "; }          /* ✗ */
+@media (prefers-reduced-motion: reduce) { .sound-chip { transition: none; } }
 
 .pad__sounds-msg {
   font-family: var(--font-mono);

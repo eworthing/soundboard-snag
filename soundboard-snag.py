@@ -189,6 +189,11 @@ def _extract_board_image(board_html):
     not under ``/boardicon/`` so it is correctly ignored → caller/UI fall back
     to a placeholder). Pure/no I/O.
     """
+    # Prefer the board's own page-bg icon; only then fall back to any /boardicon
+    # reference (a related-boards sidebar can otherwise win and show wrong art).
+    pb = re.search(r'class=["\']page-bg["\'][^>]*url\((/boardicon/[^\s"\')]+)\)', board_html, re.IGNORECASE)
+    if pb:
+        return BASE_URL + pb.group(1)
     m = re.search(r'/boardicon/[^\s"\')]+', board_html)
     return (BASE_URL + m.group(0)) if m else None
 
@@ -916,7 +921,10 @@ class SoundboardSnag:
             if not has_downloads:
                 rprint(f"  Note: This board has downloads disabled by the owner.")
 
-        emit("download_complete", snagged=snagged_count, existing=existing_count, failed=failed_count)
+        # Only a clean run is "complete"; an aborted run already emitted
+        # download_aborted and must not also report success to the web client.
+        if not early_exit:
+            emit("download_complete", snagged=snagged_count, existing=existing_count, failed=failed_count)
         return not early_exit
 
 
@@ -936,6 +944,8 @@ def search_boards(
     logger=None,
     fetch=None,
     render=True,
+    cancel_event=None,
+    time_budget=None,
 ):
     """Search for soundboards with detailed information including filenames, category, and tags.
 
@@ -1089,7 +1099,23 @@ def search_boards(
     max_pages = 10  # Safety limit to prevent infinite loops
     keep_searching = True
 
+    # Optional wall-clock budget (seconds). Date inference (recent/--include-dates)
+    # probes HTTP headers per track and can run for minutes on a popular term; the
+    # web path passes a budget so the search returns partial results instead of
+    # appearing to hang. None = unlimited (the CLI default).
+    search_deadline = (time.monotonic() + time_budget) if time_budget else None
+    time_budget_hit = False
+
+    def _over_budget():
+        return search_deadline is not None and time.monotonic() > search_deadline
+
     while keep_searching and page <= max_pages:
+        # Cooperative cancellation (web client disconnect) — stop between pages.
+        if cancel_event is not None and cancel_event.is_set():
+            break
+        if _over_budget():
+            time_budget_hit = True
+            break
         search_url = f"{BASE_URL}/search/{encoded_query}?page={page}" if page > 1 else f"{BASE_URL}/search/{encoded_query}"
 
         vprint(f"Fetching search page {page}: {search_url}")
@@ -1148,6 +1174,16 @@ def search_boards(
 
         # Analyze boards from this page
         for board_index, board_name in enumerate(page_boards, 1):
+            # Cooperative cancellation — stop between boards on client disconnect.
+            if cancel_event is not None and cancel_event.is_set():
+                keep_searching = False
+                break
+            # Wall-clock budget — return what we have rather than hang on a big
+            # date-inference scan.
+            if _over_budget():
+                time_budget_hit = True
+                keep_searching = False
+                break
             # If we have enough downloadable boards, we can stop
             if downloadable_count >= target_downloadable:
                 keep_searching = False
@@ -1391,7 +1427,7 @@ def search_boards(
 
                 # Only add to results if it meets filters
                 if meets_filters:
-                    results.append(BoardResult(
+                    new_board = BoardResult(
                         board_name=board_name,
                         has_downloads=has_downloads,
                         sounds_info=sounds_info,
@@ -1405,7 +1441,14 @@ def search_boards(
                         approx_source=approx_source,
                         title=board_title,
                         image=board_image,
-                    ))
+                    )
+                    results.append(new_board)
+
+                    # Stream each downloadable board to the web client as it's found
+                    # (full dict) so pads render progressively instead of appearing
+                    # all at once when the whole scan finishes.
+                    if logger and has_downloads:
+                        logger.event("board_result", board=board_result_to_dict(new_board))
 
                     # Count downloadable boards that meet filters
                     if has_downloads and meets_filters:
@@ -1426,7 +1469,9 @@ def search_boards(
                     logger.event("board_analyze_error", board=board_name, error=str(e))
                 # Don't increment downloadable_count on error
                 # Move cursor up to hide the "Analyzing" line if not in debug mode
-                if (not debug) and (not verbose) and sys.stdout.isatty():
+                # (render gates this too — a render=False web worker must not touch
+                # the terminal of a server started from a tty).
+                if render and (not debug) and (not verbose) and sys.stdout.isatty():
                     sys.stdout.write('\033[F\033[K')
                     sys.stdout.flush()
                 continue
@@ -1442,6 +1487,15 @@ def search_boards(
 
     # Filter results to only show downloadable boards (already done in meets_filters logic)
     results = [r for r in results if r.has_downloads]
+
+    # Tell the caller (web UI) we stopped early on the time budget, so it can note
+    # that results may be incomplete rather than looking like a silent truncation.
+    if time_budget_hit and logger:
+        logger.event("search_partial",
+                      message=f"Reached the {int(time_budget)}s limit while checking dates "
+                              f"(recent filtering probes each board one by one, so it's slow). "
+                              f"Showing what was found — results may be incomplete.",
+                      scanned=boards_analyzed_total)
 
     # Sort results
     if sort_by == "recent":
@@ -1546,7 +1600,32 @@ def search_boards(
 
     return results
 
-def run_server(host, port, download_root, logger=None, max_jobs=3):
+def _ensure_ca_bundle():
+    """Best-effort CA-bundle setup so HTTPS works on every entry point.
+
+    python.org macOS Python often ships without a usable system trust store, so
+    requests to soundboard.com fail with CERTIFICATE_VERIFY_FAILED. If nothing is
+    configured and a real system bundle is absent, fall back to certifi when it is
+    importable. Optional — no hard dependency; degrades to stdlib defaults when
+    certifi is missing (preserving the zero-third-party-dependency baseline).
+    """
+    if os.environ.get("SSL_CERT_FILE"):
+        return
+    try:
+        import ssl
+        cafile = ssl.get_default_verify_paths().openssl_cafile
+        if cafile and os.path.isfile(cafile):
+            return  # a real system bundle exists; leave defaults alone
+    except Exception:
+        pass
+    try:
+        import certifi
+        os.environ["SSL_CERT_FILE"] = certifi.where()
+    except Exception:
+        pass  # no certifi → unchanged behavior
+
+
+def run_server(host, port, download_root, logger=None, max_jobs=2):
     """Start the local web UI + JSON/SSE API, reusing the search/download engines.
 
     Additive feature: the one-shot CLI is unaffected. Server-side downloads land
@@ -1597,6 +1676,12 @@ def run_server(host, port, download_root, logger=None, max_jobs=3):
         if any(ord(c) < 32 for c in value):
             return False
         return True
+
+    def is_loopback(host):
+        host = (host or "").strip()
+        if host.startswith("::ffff:"):  # IPv4-mapped IPv6 (dual-stack)
+            host = host[7:]
+        return host in ("::1", "localhost") or host.startswith("127.")
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "soundboard-snag"
@@ -1682,9 +1767,25 @@ def run_server(host, port, download_root, logger=None, max_jobs=3):
             return self._serve_static(path)
 
         def do_POST(self):
-            if _urlparse(self.path).path == "/api/download":
+            path = _urlparse(self.path).path
+            if path == "/api/download":
                 return self._api_download()
+            if path == "/api/download-sound":
+                return self._api_download_sound()
+            if path == "/api/shutdown":
+                return self._api_shutdown()
             self._send_json({"error": "not found"}, status=404)
+
+        # ---- POST /api/shutdown (stops the server; used by the app's Stop button) ----
+        def _api_shutdown(self):
+            # State-changing: refuse cross-site requests (CSRF) and non-loopback
+            # peers (even if the server was bound to 0.0.0.0).
+            if not self._origin_ok() or not is_loopback(self.client_address[0]):
+                self._send_json({"error": "forbidden"}, status=403)
+                return
+            self._send_json({"ok": True})
+            # shutdown() must run off the serve_forever thread, so spawn one.
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
 
         # ---- static files (path-traversal hardened) ----
         def _serve_static(self, urlpath):
@@ -1706,6 +1807,54 @@ def run_server(host, port, download_root, logger=None, max_jobs=3):
                 return
             self._send_bytes(body, CONTENT_TYPES.get(ext, "application/octet-stream"))
 
+        # ---- shared API helpers ----
+        def _origin_ok(self):
+            # CSRF guard for state-changing POSTs: a browser attaches Origin on
+            # cross-site requests; reject any that isn't this local server. No
+            # Origin = non-browser (curl/automation) → allow.
+            origin = self.headers.get("Origin")
+            if not origin:
+                return True
+            try:
+                host = _urlparse(origin).hostname
+            except Exception:
+                return False
+            return is_loopback(host or "")
+
+        def _run_sse_job(self, build_worker):
+            """Shared SSE lifecycle for the streaming endpoints.
+
+            Acquire a job slot, stream a worker's events until its sentinel, and
+            release the slot only when the worker TRULY finishes — so a client
+            disconnect can't free the slot while the scrape keeps running (which
+            would defeat the concurrency cap and amplify requests). build_worker
+            receives (emit, cancel) and returns a no-arg worker callable; the
+            handler sets `cancel` on disconnect so the worker stops early.
+            """
+            if not job_sem.acquire(blocking=False):
+                self._start_sse()
+                self._sse_send("busy", {"message": "server busy, try again"})
+                return
+            self._start_sse()
+            q = _queue.Queue()  # unbounded
+            sentinel = object()
+            cancel = threading.Event()
+
+            def emit(event_type, data=None, **fields):
+                q.put((event_type, data if data is not None else fields))
+
+            worker_fn = build_worker(emit, cancel)
+
+            def runner():
+                try:
+                    worker_fn()
+                finally:
+                    q.put(sentinel)
+                    job_sem.release()
+
+            threading.Thread(target=runner, daemon=True).start()
+            self._pump(q, sentinel, cancel=cancel)
+
         # ---- GET /api/search (SSE) ----
         def _api_search(self, qs):
             def first(name, default=None):
@@ -1717,17 +1866,18 @@ def run_server(host, port, download_root, logger=None, max_jobs=3):
                 if not query:
                     self._send_json({"error": "missing q"}, status=400)
                     return
-                max_results = int(first("max", "20"))
-                min_views = int(first("min_views", "0"))
-                min_sounds = int(first("min_sounds", "0"))
+                # Clamp to sane bounds so one request can't drive an unbounded scrape.
+                max_results = max(1, min(int(first("max", "20")), 100))
+                min_views = max(0, int(first("min_views", "0")))
+                min_sounds = max(0, int(first("min_sounds", "0")))
                 sort_by = first("sort", "views")
                 if sort_by not in ("views", "recent"):
                     self._send_json({"error": "bad sort"}, status=400)
                     return
                 include_dates = (first("include_dates", "0") in ("1", "true", "yes"))
                 rd = first("recent_days")
-                recent_days = int(rd) if rd not in (None, "") else None
-                date_sample_size = int(first("date_sample_size", "0"))
+                recent_days = max(1, min(int(rd), 3650)) if rd not in (None, "") else None
+                date_sample_size = max(0, min(int(first("date_sample_size", "0")), 50))
             except ValueError:
                 self._send_json({"error": "bad params"}, status=400)
                 return
@@ -1735,44 +1885,44 @@ def run_server(host, port, download_root, logger=None, max_jobs=3):
             if recent_days is not None or sort_by == "recent":
                 include_dates = True
 
-            if not job_sem.acquire(blocking=False):
-                self._start_sse()
-                self._sse_send("busy", {"message": "server busy, try again"})
-                return
-            try:
-                self._start_sse()
-                q = _queue.Queue()  # unbounded: a disconnected search finishes in bg
-                sentinel = object()
-
+            def build(emit, cancel):
                 class _Sink:
                     def event(self, event_type, **fields):
-                        q.put((event_type, fields))
+                        emit(event_type, **fields)
 
                 def worker():
                     try:
+                        # Bound date inference: a small per-board sample keeps a
+                        # recent/dated search from probing every track of every
+                        # board, and time_budget caps total wall-clock so a popular
+                        # term returns partial results instead of hanging.
+                        dss = date_sample_size if date_sample_size > 0 else 4
                         results = search_boards(
                             query, max_results, False, min_views, min_sounds,
                             include_dates=include_dates, recent_days=recent_days,
-                            sort_by=sort_by, date_sample_size=date_sample_size,
-                            progress=False, verbose=False, logger=_Sink(), render=False,
+                            sort_by=sort_by, date_sample_size=dss,
+                            progress=False, verbose=False, logger=_Sink(),
+                            render=False, cancel_event=cancel, time_budget=30,
                         )
-                        q.put(("results", [board_result_to_dict(b) for b in results]))
+                        emit("results", [board_result_to_dict(b) for b in results])
                     except Exception as e:
-                        q.put(("error", {"message": str(e)}))
-                    finally:
-                        q.put(sentinel)
+                        emit("error", {"message": str(e)})
+                return worker
 
-                threading.Thread(target=worker, daemon=True).start()
-                self._pump(q, sentinel)  # no cancel seam for search (bounded by max)
-            finally:
-                job_sem.release()
+            self._run_sse_job(build)
 
         # ---- POST /api/download (SSE) ----
         def _api_download(self):
+            if not self._origin_ok():  # CSRF guard
+                self._send_json({"error": "forbidden"}, status=403)
+                return
             try:
                 length = int(self.headers.get("Content-Length", 0) or 0)
             except ValueError:
                 length = 0
+            if length > 64 * 1024:  # cap body size — no reason a board POST is large
+                self._send_json({"error": "request too large"}, status=413)
+                return
             raw = self.rfile.read(length) if length else b""
             try:
                 body = _json.loads(raw.decode("utf-8")) if raw else {}
@@ -1787,7 +1937,8 @@ def run_server(host, port, download_root, logger=None, max_jobs=3):
             root = server_root
             req_root = body.get("download_root")
             if req_root:
-                cand = os.path.realpath(os.path.expanduser(os.path.abspath(req_root)))
+                # expanduser BEFORE abspath so a leading ~ resolves to $HOME.
+                cand = os.path.realpath(os.path.abspath(os.path.expanduser(req_root)))
                 try:
                     if os.path.commonpath([server_root, cand]) != server_root:
                         self._send_json({"error": "download_root escapes server root"}, status=400)
@@ -1797,32 +1948,60 @@ def run_server(host, port, download_root, logger=None, max_jobs=3):
                     return
                 root = cand
 
-            if not job_sem.acquire(blocking=False):
-                self._start_sse()
-                self._sse_send("busy", {"message": "server busy, try again"})
-                return
-            try:
-                self._start_sse()
-                q = _queue.Queue()
-                sentinel = object()
-                cancel = threading.Event()
-
-                def cb(event_type, **fields):
-                    q.put((event_type, fields))
-
+            def build(emit, cancel):
                 def worker():
                     try:
                         board_url = "%s/sb/%s" % (BASE_URL, _quote_path_segment(board))
-                        tool = SoundboardSnag(board_url, download_root=root, event_cb=cb,
-                                              render=False, cancel_event=cancel)
-                        tool.snag()
+                        SoundboardSnag(board_url, download_root=root, event_cb=emit,
+                                       render=False, cancel_event=cancel).snag()
                     except Exception as e:
-                        q.put(("download_error", {"error": str(e)}))
-                    finally:
-                        q.put(sentinel)
+                        emit("download_error", {"error": str(e)})
+                return worker
 
-                threading.Thread(target=worker, daemon=True).start()
-                self._pump(q, sentinel, cancel=cancel)
+            self._run_sse_job(build)
+
+        # ---- POST /api/download-sound (one track; JSON, not SSE) ----
+        def _api_download_sound(self):
+            if not self._origin_ok():  # CSRF guard
+                self._send_json({"error": "forbidden"}, status=403)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+            except ValueError:
+                length = 0
+            if length > 64 * 1024:
+                self._send_json({"error": "request too large"}, status=413)
+                return
+            raw = self.rfile.read(length) if length else b""
+            try:
+                body = _json.loads(raw.decode("utf-8")) if raw else {}
+            except Exception:
+                self._send_json({"error": "bad json"}, status=400)
+                return
+            board = (body.get("board") or "").strip()
+            sound_id = str(body.get("sound_id") or "").strip()
+            title = (body.get("title") or "").strip()
+            if not valid_board(board) or not sound_id.isdigit():
+                self._send_json({"error": "bad params"}, status=400)
+                return
+            if not job_sem.acquire(blocking=False):
+                self._send_json({"error": "busy"}, status=503)
+                return
+            try:
+                board_url = "%s/sb/%s" % (BASE_URL, _quote_path_segment(board))
+                tool = SoundboardSnag(board_url, download_root=server_root, render=False)
+                output_dir = os.path.join(tool.download_root, tool._board_output_dirname())
+                os.makedirs(output_dir, exist_ok=True)
+                result, data = tool._snag_sound(sound_id, title, output_dir)
+                if result is True:
+                    name, kb = data
+                    self._send_json({"status": "saved", "name": name, "kb": round(kb, 1)})
+                elif result is None:
+                    self._send_json({"status": "exists", "name": data})
+                else:
+                    self._send_json({"status": "error", "error": data})
+            except Exception as e:
+                self._send_json({"status": "error", "error": str(e)})
             finally:
                 job_sem.release()
 
@@ -1873,6 +2052,8 @@ def run_server(host, port, download_root, logger=None, max_jobs=3):
 
 def main():
     """Command-line interface."""
+    # Make HTTPS work on python.org Python regardless of how we were launched.
+    _ensure_ca_bundle()
     # Get current working directory for help text
     cwd = os.getcwd()
 

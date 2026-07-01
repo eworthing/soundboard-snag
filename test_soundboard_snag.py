@@ -969,7 +969,10 @@ class SnagEventCbTests(unittest.TestCase):
                 snag_obj.snag()
 
         self.assertIn("download_aborted", events)
-        self.assertIn("download_complete", events)  # summary always fires
+        # An aborted run must NOT also emit download_complete — that would let the
+        # web UI report a failed/cancelled download as a success.
+        self.assertNotIn("download_complete", events)
+        self.assertEqual(events[-1], "download_aborted")  # aborted is the terminal event
         self.assertEqual(file_saved_count[0], 1)    # exactly one file saved before abort
         self.assertLess(events.count("file_saved"), 3)
 

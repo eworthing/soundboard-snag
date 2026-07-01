@@ -66,6 +66,9 @@
         </span>
         <!-- Fallback address shown before JS runs; JS updates to window.location.host -->
         <span class="device-header__address" id="server-address">v · 127.0.0.1:8765</span>
+        <!-- Stops the local server (the macOS app launches it; this is how you quit). -->
+        <button type="button" class="device-header__stop" id="stop-server"
+                aria-label="Stop the server">Stop</button>
       </div>
 
     </div>
@@ -178,34 +181,15 @@
             class="control-strip__select"
             aria-label="Sort order"
           >
-            <option value="views">views</option>
-            <option value="recent">recent</option>
+            <option value="views">most viewed</option>
+            <option value="recent">recently updated</option>
           </select>
         </div>
 
         <label class="control-strip__toggle">
           <input type="checkbox" id="include-dates" aria-label="Fetch approximate update dates">
-          <span class="control-strip__toggle-label">include-dates</span>
+          <span class="control-strip__toggle-label">show dates</span>
         </label>
-
-        <label class="control-strip__toggle">
-          <input type="checkbox" id="recent-only" aria-label="Filter to recently updated boards">
-          <span class="control-strip__toggle-label">recent-only</span>
-        </label>
-
-        <!-- Shown only when recent-only is checked -->
-        <div class="control-strip__field" id="recent-days-wrap" hidden>
-          <label for="recent-days" class="control-strip__label">recent-days</label>
-          <input
-            type="number"
-            id="recent-days"
-            class="control-strip__input"
-            value="30"
-            min="1"
-            step="1"
-            aria-label="Number of days for recent filter"
-          >
-        </div>
 
       </div>
     </section>

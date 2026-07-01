@@ -33,6 +33,9 @@ const padMap = new Map();
 let lastResults = [];
 let lastQuery   = '';
 
+/** In-flight downloads (board id → AbortController) so Stop can cancel them. */
+const activeDownloads = new Map();
+
 /* ═══════════════════════════════════════════════════════════════
    DOM REFERENCES
    Gathered once at module load. All IDs match index.html.
@@ -48,9 +51,6 @@ const minSoundsInput  = $('min-sounds');
 const maxInput        = $('max-results');
 const sortSelect      = $('sort-order');
 const includeDates    = $('include-dates');
-const recentOnly      = $('recent-only');
-const recentDays      = $('recent-days');
-const recentDaysWrap  = $('recent-days-wrap');
 const cliCommandEl    = $('cli-command');
 const copyBtn         = $('copy-cmd');
 const cliPasteInput   = $('cli-paste');
@@ -184,8 +184,6 @@ function buildCliCommand() {
   const max    = maxInput.value.trim();
   const sort   = sortSelect.value;
   const dates  = includeDates.checked;
-  const recent = recentOnly.checked;
-  const days   = recentDays.value.trim();
 
   const parts = ['soundboard-snag.py'];
 
@@ -195,15 +193,9 @@ function buildCliCommand() {
   if (max  && max  !== '20')  parts.push(`--max ${max}`);
   if (sort && sort !== 'views') parts.push(`--sort ${sort}`);
 
-  // --include-dates is implied by --recent-days, so only add it standalone
-  // when it's checked but recent-only is not (avoids redundancy).
-  if (dates && !recent)       parts.push('--include-dates');
-
-  if (recent) {
-    // --recent-days implies --include-dates on the CLI side
-    const d = (days && days !== '30') ? days : '30';
-    parts.push(`--recent-days ${d}`);
-  }
+  // --sort recent implies --include-dates on the CLI side; only add it
+  // standalone when sorting by views (avoids redundancy).
+  if (dates && sort !== 'recent') parts.push('--include-dates');
 
   return parts.join(' ');
 }
@@ -277,8 +269,6 @@ function parseAndApplyCommand(rawCmd) {
   maxInput.value      = '20';
   sortSelect.value    = 'views';
   includeDates.checked = false;
-  recentOnly.checked  = false;
-  recentDays.value    = '30';
 
   let i = 0;
   while (i < tokens.length) {
@@ -304,13 +294,11 @@ function parseAndApplyCommand(rawCmd) {
       case '--include-dates':
         includeDates.checked = true;
         break;
-      case '--recent-days': {
-        const d = tokens[++i] ?? '30';
-        recentDays.value    = d;
-        recentOnly.checked  = true;
-        includeDates.checked = true; // implied
+      case '--recent-days':
+        // Legacy hard cutoff is gone — map it to "sort by recently updated".
+        i++;  // consume the day count
+        sortSelect.value = 'recent';
         break;
-      }
       default:
         // Unknown flag: if the next token looks like a value (not a flag),
         // consume it so we stay in sync.
@@ -320,9 +308,6 @@ function parseAndApplyCommand(rawCmd) {
     }
     i++;
   }
-
-  // Sync the recent-days wrapper visibility
-  recentDaysWrap.hidden = !recentOnly.checked;
 
   refreshCliMirror();
 }
@@ -542,15 +527,58 @@ async function toggleSounds(padEl, board) {
     if (!sounds.length) {
       soundsEl.innerHTML = `<span class="pad__sounds-msg">No sounds found.</span>`;
     } else {
+      // Each chip is a button — click it to download just that one sound.
       soundsEl.innerHTML = sounds
-        .map(s => `<span class="sound-chip" title="${escHtml(s.id)}">${escHtml(s.title)}</span>`)
+        .map(s => `<button type="button" class="sound-chip" data-id="${escHtml(s.id)}" data-title="${escHtml(s.title)}" title="Download — ${escHtml(s.title)}">${escHtml(s.title)}</button>`)
         .join('');
+      soundsEl.querySelectorAll('.sound-chip').forEach(chip => {
+        chip.addEventListener('click', (e) => {
+          e.stopPropagation();  // don't collapse the pad
+          downloadSound(chip, board.board, chip.dataset.id, chip.dataset.title);
+        });
+      });
     }
 
     padEl.dataset.soundsLoaded = '1';
   } catch (err) {
     if (err.name === 'AbortError') return;
     soundsEl.innerHTML = `<span class="pad__sounds-msg is-error">Couldn't reach soundboard.com — check your connection and try again.</span>`;
+  }
+}
+
+/**
+ * Download a single sound (one chip click). POST /api/download-sound returns a
+ * small JSON result; reflect it on the chip + a toast.
+ */
+async function downloadSound(chip, board, soundId, title) {
+  if (chip.dataset.busy) return;
+  chip.dataset.busy = '1';
+  chip.classList.add('is-downloading');
+  try {
+    const resp = await fetch('/api/download-sound', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ board, sound_id: soundId, title }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    chip.classList.remove('is-downloading');
+    if (resp.ok && (data.status === 'saved' || data.status === 'exists')) {
+      chip.classList.add('is-saved');
+      showToast(
+        data.status === 'exists' ? `Already saved: ${data.name}` : `Saved ${data.name}`,
+        'success'
+      );
+    } else {
+      chip.classList.add('is-error');
+      const why = data.error || (resp.status === 503 ? 'server busy' : `error ${resp.status}`);
+      showToast(`Couldn't save that sound — ${why}`, 'error');
+    }
+  } catch (_) {
+    chip.classList.remove('is-downloading');
+    chip.classList.add('is-error');
+    showToast('Couldn\'t reach soundboard.com — check your connection and try again.', 'error');
+  } finally {
+    delete chip.dataset.busy;
   }
 }
 
@@ -570,6 +598,7 @@ async function startDownload(padEl, board) {
   progressEl.textContent = 'Starting…';
 
   const dlAbort = new AbortController();
+  activeDownloads.set(board.board, dlAbort);
 
   try {
     await streamSSE('/api/download', {
@@ -640,11 +669,13 @@ async function startDownload(padEl, board) {
     });
   } catch (err) {
     if (err.name === 'AbortError') {
-      // User navigated away — silent
+      // User navigated away / clicked Stop — silent
     } else {
       showToast('Couldn\'t reach soundboard.com — check your connection and try again.', 'error');
       resetGrabBtn(grabBtn, progressEl, 0);
     }
+  } finally {
+    activeDownloads.delete(board.board);
   }
 }
 
@@ -734,7 +765,7 @@ async function startSearch(query) {
   params.set('max', String(maxBoards));
   params.set('sort', sortSelect.value);
   if (includeDates.checked)              params.set('include_dates', '1');
-  if (recentOnly.checked && recentDays.value) params.set('recent_days', recentDays.value);
+  // No hard recent-days cutoff — "recently updated" sort shows the newest found.
 
   try {
     await streamSSE(`/api/search?${params}`, {
@@ -751,10 +782,22 @@ async function startSearch(query) {
             rackCount.textContent = `${boardsScanned} scanned`;
             break;
 
+          // A downloadable board was found — render its pad immediately (full
+          // dict), replacing a skeleton, so results stream in during a long scan.
+          case 'board_result':
+            if (data && data.board) renderProgressive(data.board);
+            break;
+
           // Progress-only events. These do NOT carry full board objects (no name /
           // total_count / views) and fire for every analyzed board incl. play-only
           // and filtered ones, so they neither render pads nor count (counting here
           // double-incremented the scanned tally). Pads come solely from `results`.
+          // Server hit its time budget (dated searches can be slow) — results
+          // that follow may be incomplete.
+          case 'search_partial':
+            if (data && data.message) showToast(data.message, 'error');
+            break;
+
           case 'board_parsed':
           case 'board_filter_result':
           case 'search_page_parsed':
@@ -766,7 +809,10 @@ async function startSearch(query) {
           // Authoritative array of all passing boards. Reconcile the grid:
           // replace any remaining skeletons, add any boards not already shown.
           case 'results': {
-            const boards = Array.isArray(data) ? data : [];
+            // Filter play-only boards ONCE here so the rendered pads and the
+            // "N loaded" count agree (the server may include non-downloadable
+            // boards that pass the view/sound filters).
+            const boards = (Array.isArray(data) ? data : []).filter(b => b && b.has_downloads);
             reconcileResults(boards);
             finishSearch(boards.length);
             break;
@@ -825,6 +871,17 @@ function insertProgressivePad(board) {
  * After the `results` event: clear remaining skeletons and add any
  * boards from the final array that aren't already in the grid.
  */
+/** Render one board's pad as soon as it's found (progressive streaming). */
+function renderProgressive(board) {
+  if (!board || !board.has_downloads || padMap.has(board.board)) return;
+  rackEmpty.hidden = true;
+  const skeleton = padGrid.querySelector('.pad--skeleton');
+  const pad = createPad(board, 0);
+  if (skeleton) padGrid.replaceChild(pad, skeleton);
+  else padGrid.appendChild(pad);
+  padMap.set(board.board, pad);
+}
+
 function reconcileResults(boards) {
   // Remove leftover skeletons
   padGrid.querySelectorAll('.pad--skeleton').forEach(s => s.remove());
@@ -844,17 +901,10 @@ function reconcileResults(boards) {
   }
 
   rackEmpty.hidden = true;
-
-  // Add boards not yet shown; stagger from however many are already shown
-  let staggerOffset = padMap.size;
-  boards.forEach(board => {
-    if (padMap.has(board.board)) return;
-    const delay = Math.min(staggerOffset * 40, 500);
-    const pad   = createPad(board, delay);
-    padGrid.appendChild(pad);
-    padMap.set(board.board, pad);
-    staggerOffset++;
-  });
+  // Pads were mostly rendered progressively as they streamed in; renderBoards
+  // reuses those existing nodes and reorders them into the final sorted order
+  // (creating a pad only for any board not already shown).
+  renderBoards(boards);
 }
 
 /** Return a new array sorted by the given key (does not mutate input). */
@@ -875,12 +925,17 @@ function sortBoards(boards, key) {
 
 /** Clear the grid and render the given boards in order (used for re-sort). */
 function renderBoards(boards) {
-  padGrid.innerHTML = '';
-  padMap.clear();
+  // Reorder in place, REUSING existing pad nodes — appendChild moves an existing
+  // child to its new position, so an in-flight download's closure/progress stays
+  // attached (recreating the node would detach it and let a duplicate download
+  // start). Only build a pad for a board not already on screen.
   boards.forEach((board, i) => {
-    const pad = createPad(board, Math.min(i * 30, 400));
+    let pad = padMap.get(board.board);
+    if (!pad) {
+      pad = createPad(board, Math.min(i * 30, 400));
+      padMap.set(board.board, pad);
+    }
     padGrid.appendChild(pad);
-    padMap.set(board.board, pad);
   });
 }
 
@@ -987,7 +1042,7 @@ searchForm.addEventListener('submit', (e) => {
 });
 
 // All controls → refresh the CLI mirror on any change
-[minViewsInput, minSoundsInput, maxInput, sortSelect, includeDates, recentOnly, recentDays, searchInput]
+[minViewsInput, minSoundsInput, maxInput, sortSelect, includeDates, searchInput]
   .forEach(el => {
     el.addEventListener('input',  refreshCliMirror);
     el.addEventListener('change', refreshCliMirror);
@@ -996,15 +1051,21 @@ searchForm.addEventListener('submit', (e) => {
 // Sort control → re-order results already on screen (no re-search for views).
 sortSelect.addEventListener('change', applySortChange);
 
-// recent-only checkbox → show/hide the recent-days input
-recentOnly.addEventListener('change', () => {
-  recentDaysWrap.hidden = !recentOnly.checked;
-  // recent-only requires dates to be fetched server-side
-  if (recentOnly.checked) {
-    includeDates.checked = true;
-  }
-  refreshCliMirror();
-});
+// Stop button → shut down the local server (this is how you "quit" the app).
+const stopServerBtn = document.getElementById('stop-server');
+if (stopServerBtn) {
+  stopServerBtn.addEventListener('click', async () => {
+    stopServerBtn.disabled = true;
+    if (searchAbort) searchAbort.abort();
+    // Cancel any in-flight downloads so files stop landing after "quit".
+    activeDownloads.forEach(c => c.abort());
+    activeDownloads.clear();
+    try { await fetch('/api/shutdown', { method: 'POST' }); } catch (_) { /* server going down */ }
+    document.body.innerHTML =
+      '<div class="stopped-screen"><strong>Server stopped.</strong>' +
+      '<span>You can close this tab. Re-open Soundboard Snag to start again.</span></div>';
+  });
+}
 
 // Copy CLI command to clipboard
 copyBtn.addEventListener('click', async () => {

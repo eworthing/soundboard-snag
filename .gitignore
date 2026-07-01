@@ -38,6 +38,7 @@ env/
 */
 !.github/
 !web/
+!scripts/
 
 # But keep the script
 !soundboard-snag.py
@@ -49,3 +50,6 @@ env/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Generated macOS app bundle (machine-specific; rebuild with scripts/build-macos-app.sh)
+/Soundboard Snag.app/
