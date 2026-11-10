@@ -1065,7 +1065,7 @@ class DownloadCoordinator:
             if job["status"] not in self.FINAL and time.monotonic() > job["deadline"]:
                 job["status"] = "expired"
                 expired = True
-            result = {k: job[k] for k in ("status", "name", "kb", "error") if k in job}
+            result = {k: job[k] for k in ("status", "name", "kb", "error", "path") if k in job}
         if expired:
             self._close(token)
         return result
@@ -1096,7 +1096,7 @@ class DownloadCoordinator:
                     name = "%s (%s)%s" % (job["base_name"], job["sound_id"] or "2", ext)
                     path = os.path.join(job["dest_dir"], name)
                 if os.path.exists(path):
-                    job.update(status="exists", name=name)
+                    job.update(status="exists", name=name, path=path)
                     close = True
                     path = None
                 else:
@@ -1119,7 +1119,7 @@ class DownloadCoordinator:
                 original = job.get("original")
                 if original and filecmp.cmp(original, job["path"], shallow=False):
                     os.remove(job["path"])       # same audio as the file already saved
-                    job.update(status="exists", name=os.path.basename(original))
+                    job.update(status="exists", name=os.path.basename(original), path=original)
                 else:
                     job["kb"] = round(os.path.getsize(job["path"]) / 1024, 1)
                     job["status"] = "saved"
@@ -1381,6 +1381,8 @@ def run_server(host, port, download_root, max_jobs=2, coordinator=None, on_ready
             path = _urlparse(self.path).path
             if path == "/api/fetch-sound":
                 return self._api_fetch_sound()
+            if path == "/api/file":
+                return self._api_file()
             self._send_json({"error": "not found"}, status=404)
 
         # ---- static files (path-traversal hardened) ----
@@ -1514,6 +1516,53 @@ def run_server(host, port, download_root, max_jobs=2, coordinator=None, on_ready
 
             self._run_sse_job(build)
 
+        def _read_json(self):
+            """Body of a state-changing POST as a dict, or None after sending the error.
+
+            Rejects cross-site and non-loopback callers (CSRF guard), oversized
+            bodies and bad JSON.
+            """
+            if not self._origin_ok() or not is_loopback(self.client_address[0]):
+                self._send_json({"error": "forbidden"}, status=403)
+                return None
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+            except ValueError:
+                length = 0
+            if length > 64 * 1024:
+                self._send_json({"error": "request too large"}, status=413)
+                return None
+            try:
+                body = _json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            except Exception:
+                body = None
+            if not isinstance(body, dict):
+                self._send_json({"error": "bad json"}, status=400)
+                return None
+            return body
+
+        # ---- POST /api/file (open a saved sound, or show it in Finder) ----
+        def _api_file(self):
+            """Open a saved file in its default app, or reveal it in Finder.
+
+            Only files inside the download folder: the page is handed a path by
+            ``/api/fetch-sound`` polling, but never trusted to name any other file.
+            """
+            body = self._read_json()
+            if body is None:
+                return
+            action = body.get("action")
+            real = os.path.realpath(str(body.get("path") or ""))
+            try:
+                inside = os.path.commonpath([server_root, real]) == server_root
+            except ValueError:
+                inside = False
+            if action not in ("open", "reveal") or not inside or not os.path.isfile(real):
+                self._send_json({"error": "bad request"}, status=400)
+                return
+            subprocess.Popen(["open", "-R", real] if action == "reveal" else ["open", real])
+            self._send_json({"ok": True})
+
         # ---- POST /api/fetch-sound (open a download window for one sound) ----
         def _api_fetch_sound(self):
             """Start one sound: the shell opens its download page in a window.
@@ -1522,20 +1571,8 @@ def run_server(host, port, download_root, max_jobs=2, coordinator=None, on_ready
             to soundboard.com is made by the window, i.e. like a browser visit
             the person completes themself, never by this server.
             """
-            if not self._origin_ok() or not is_loopback(self.client_address[0]):  # CSRF guard
-                self._send_json({"error": "forbidden"}, status=403)
-                return
-            try:
-                length = int(self.headers.get("Content-Length", 0) or 0)
-            except ValueError:
-                length = 0
-            if length > 64 * 1024:
-                self._send_json({"error": "request too large"}, status=413)
-                return
-            try:
-                body = _json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
-            except Exception:
-                self._send_json({"error": "bad json"}, status=400)
+            body = self._read_json()
+            if body is None:
                 return
             board = (body.get("board") or "").strip()
             sound_id = str(body.get("sound_id") or "").strip()

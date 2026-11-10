@@ -191,6 +191,27 @@ html.in-app .toolbar { background: transparent; }
   box-shadow: 0 0.4615rem 1.8462rem rgba(0, 0, 0, 0.18);
   animation: toast-in 0.2s ease-out both; transition: opacity 0.3s;
 }
+.toast--file {
+  display: flex; align-items: center; gap: 0.75rem; text-align: left;
+  min-width: 18rem; max-width: 100%; padding: 0.55rem 0.6rem 0.55rem 0.55rem;
+  pointer-events: auto; cursor: default;
+}
+.toast--file:hover { background: color-mix(in srgb, Canvas 60%, var(--fill-hover)); }
+.toast--file:focus-visible { outline-offset: 2px; }
+.toast__icon {
+  flex: none; width: 2.3rem; height: 2.3rem; border-radius: 0.5rem;
+  display: flex; align-items: center; justify-content: center; font-size: 1.3rem;
+  color: var(--accent-text); background: var(--accent);
+}
+.toast__text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.toast__title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toast__detail { color: var(--fg-2); font-size: 0.85em; }
+.toast__reveal {
+  flex: none; width: 1.7rem; height: 1.7rem; border-radius: 50%; border: 0; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--fg-2); background: var(--fill-hover); cursor: default;
+}
+.toast__reveal:hover { color: var(--accent-text); background: var(--accent); }
 .toast--success { border-color: color-mix(in srgb, var(--green) 50%, transparent); }
 .toast--error { border-color: color-mix(in srgb, var(--red) 50%, transparent); }
 .toast.is-dismissing { opacity: 0; }

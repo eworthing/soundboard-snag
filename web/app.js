@@ -94,7 +94,8 @@ async function fetchSound(chip, board, soundId, title) {
     if (st.status === 'waiting' || st.status === 'saving') continue;
     if (st.status === 'saved' || st.status === 'exists') {
       finish('is-saved');
-      showToast(st.status === 'exists' ? `Already saved: ${st.name}` : `Saved ${st.name}`, 'success');
+      if (st.path) showSavedToast(st.name, st.path, st.status === 'exists');
+      else showToast(st.status === 'exists' ? `Already saved: ${st.name}` : `Saved ${st.name}`, 'success');
       cueNextChip(chip);
     } else if (st.status === 'failed') {
       finish('is-error');
@@ -801,15 +802,71 @@ function showToast(msg, type = '') {
   toast.className = `toast${type ? ` toast--${type}` : ''}`;
   toast.textContent = msg;
   toastContainer.appendChild(toast);
+  autoDismiss(toast, 4000);
+}
 
-  // Dismiss after 4 seconds
-  setTimeout(() => {
-    toast.classList.add('is-dismissing');
-    // Remove from DOM after the CSS transition completes (300ms)
-    toast.addEventListener('transitionend', () => toast.remove(), { once: true });
-    // Hard fallback in case transitionend doesn't fire
-    setTimeout(() => toast.remove(), 500);
-  }, 4000);
+/** Fade a toast out after `ms`; hovering over it holds it on screen. */
+function autoDismiss(toast, ms) {
+  let timer = null;
+  const start = () => {
+    timer = setTimeout(() => {
+      toast.classList.add('is-dismissing');
+      toast.addEventListener('transitionend', () => toast.remove(), { once: true });
+      setTimeout(() => toast.remove(), 500);   // fallback if transitionend never fires
+    }, ms);
+  };
+  toast.addEventListener('mouseenter', () => clearTimeout(timer));
+  toast.addEventListener('mouseleave', start);
+  start();
+}
+
+/** Ask the app to open a saved file, or to show it in Finder. */
+function fileAction(path, action) {
+  fetch('/api/file', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ path, action }),
+  }).then(resp => {
+    if (!resp.ok) showToast("Couldn't find that file. It may have been moved or deleted.", 'error');
+  }).catch(() => showToast("Couldn't reach the app.", 'error'));
+}
+
+/**
+ * The toast shown after a sound is saved, like the download items in Mac apps:
+ * click anywhere on it to open the file, or press the magnifier to show it in
+ * Finder.
+ */
+function showSavedToast(name, path, alreadySaved) {
+  const toast = document.createElement('div');
+  toast.className = 'toast toast--file toast--success';
+  toast.setAttribute('role', 'button');
+  toast.tabIndex = 0;
+  toast.title = 'Open';
+  toast.innerHTML = `
+    <span class="toast__icon" aria-hidden="true">&#9835;</span>
+    <span class="toast__text">
+      <span class="toast__title"></span>
+      <span class="toast__detail"></span>
+    </span>
+    <button type="button" class="toast__reveal" title="Show in Finder" aria-label="Show in Finder">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" focusable="false">
+        <circle cx="5.8" cy="5.8" r="4.2" stroke="currentColor" stroke-width="1.6"/>
+        <path d="M9 9l3.6 3.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+    </button>`;
+  toast.querySelector('.toast__title').textContent = name;
+  toast.querySelector('.toast__detail').textContent = alreadySaved ? 'Already saved' : 'Saved';
+  const open = () => fileAction(path, 'open');
+  toast.addEventListener('click', open);
+  toast.addEventListener('keydown', (e) => {
+    if (e.target === toast && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); open(); }
+  });
+  toast.querySelector('.toast__reveal').addEventListener('click', (e) => {
+    e.stopPropagation();   // don't also open the file
+    fileAction(path, 'reveal');
+  });
+  toastContainer.appendChild(toast);
+  autoDismiss(toast, 9000);
 }
 
 /* ═══════════════════════════════════════════════════════════════

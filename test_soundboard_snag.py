@@ -457,6 +457,7 @@ class DownloadCoordinatorTests(unittest.TestCase):
         self.c.finished(token)
         result = self.c.poll(token)
         self.assertEqual((result["status"], result["name"]), ("saved", "Pew.mp3"))
+        self.assertEqual(result["path"], path)
         self.assertGreater(result["kb"], 0)
 
     def test_non_audio_extension_falls_back_to_mp3(self):
@@ -488,7 +489,7 @@ class DownloadCoordinatorTests(unittest.TestCase):
         path = self._save(token, data=b"same audio")
         self.c.finished(token)
         self.assertFalse(os.path.exists(path))
-        self.assertEqual(self.c.poll(token), {"status": "exists", "name": "Pew.mp3"})
+        self.assertEqual(self.c.poll(token), {"status": "exists", "name": "Pew.mp3", "path": original})
         self.assertTrue(os.path.exists(original))
 
     def test_both_names_taken_counts_as_already_saved(self):
@@ -1032,6 +1033,31 @@ class ServerProtocolTests(unittest.TestCase):
         # The window's download hook asks where to save: board folder + clean name.
         path = self.coordinator.destination_for(token, "weird_name.mp3")
         self.assertEqual(path, os.path.join(os.path.realpath(self.tmpdir), "My Board", "Pew Pew.mp3"))
+
+    def test_file_endpoint_opens_or_reveals_only_files_in_the_download_folder(self):
+        folder = os.path.join(self.tmpdir, "Board")
+        os.makedirs(folder, exist_ok=True)
+        saved = os.path.join(folder, "Pew.mp3")
+        open(saved, "wb").close()
+        with mock.patch.object(sb.subprocess, "Popen") as popen:
+            self.assertEqual(self._post("/api/file", {"path": saved, "action": "open"})[0], 200)
+            self.assertEqual(self._post("/api/file", {"path": saved, "action": "reveal"})[0], 200)
+            real = os.path.realpath(saved)
+            self.assertEqual([c.args[0] for c in popen.call_args_list],
+                             [["open", real], ["open", "-R", real]])
+            popen.reset_mock()
+            outside = os.path.join(tempfile.gettempdir(), "not-in-the-download-folder.mp3")
+            open(outside, "wb").close()
+            self.addCleanup(os.remove, outside)
+            for payload in ({"path": outside, "action": "open"},
+                            {"path": os.path.join(folder, "missing.mp3"), "action": "open"},
+                            {"path": saved + "/../../../etc/hosts", "action": "open"},
+                            {"path": saved, "action": "delete"},
+                            {"action": "open"}):
+                self.assertEqual(self._post("/api/file", payload)[0], 400, payload)
+            self.assertEqual(self._post("/api/file", {"path": saved, "action": "open"},
+                                        headers={"Origin": "https://evil.example"})[0], 403)
+            popen.assert_not_called()
 
     def test_removed_endpoints_are_gone(self):
         self.assertEqual(self._post("/api/download", {"board": "ok"})[0], 404)
