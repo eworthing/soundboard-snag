@@ -145,8 +145,6 @@ const rackCount       = $('rack-count');
 const rackStatus      = $('rack-status');
 const rackEl          = $('rack');
 const toastContainer  = $('toast-container');
-const powerLed        = $('power-led');
-const commandBar      = $('command-bar');
 
 /* ═══════════════════════════════════════════════════════════════
    SSE HELPER
@@ -334,7 +332,7 @@ function createPad(board, animDelay = 0) {
        >
          <span class="grab-label">Get next sound</span>
        </button>`
-    : `<span class="pad__stat" style="color:var(--rec);font-size:0.62rem;">play-only</span>`;
+    : `<span class="pad__stat" style="color:var(--red);font-size:0.62rem;">play-only</span>`;
 
   // Cover art — board icon scraped from soundboard.com. Lazy-loaded; on error
   // (404 / blocked) it collapses to the styled waveform placeholder.
@@ -794,30 +792,6 @@ function showToast(msg, type = '') {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   POWER-ON SEQUENCE
-   A ~600ms one-shot visual moment on page load:
-   1. Amber LED flicker (device-header__led)
-   2. Command-bar backlight flash (slight delay)
-   Both are CSS animations triggered by adding a class.
-   Wrapped in a prefers-reduced-motion check:
-   if the user has reduced motion enabled the classes still get
-   added but the @media rule in styles.css cuts duration to ~0ms.
-   ═══════════════════════════════════════════════════════════════ */
-
-function runPowerOn() {
-  powerLed.classList.add('power-on');
-  powerLed.addEventListener('animationend', () => {
-    powerLed.classList.remove('power-on');
-  }, { once: true });
-
-  // Command-bar flicker starts 100ms after the LED (see CSS animation-delay)
-  commandBar.classList.add('power-on');
-  commandBar.addEventListener('animationend', () => {
-    commandBar.classList.remove('power-on');
-  }, { once: true });
-}
-
-/* ═══════════════════════════════════════════════════════════════
    EVENT WIRING
    ═══════════════════════════════════════════════════════════════ */
 
@@ -845,5 +819,3 @@ window.addEventListener('beforeunload', () => {
    INITIALISATION
    ═══════════════════════════════════════════════════════════════ */
 
-// Run the power-on animation
-runPowerOn();

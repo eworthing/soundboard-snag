@@ -39,6 +39,7 @@ env/
 !.github/
 !web/
 !scripts/
+!assets/
 
 # But keep the script
 !soundboard-snag.py

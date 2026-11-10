@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A macOS desktop app for finding soundboard.com boards and saving their sounds with clean filenames. Python: `soundboard-snag.py` holds the engine, a small local web server and the window shell; `web/` is the UI (vanilla JS/CSS, no build step). The window is pywebview (`requirements.txt`); everything else, including the unit tests, uses only the standard library.
+A macOS desktop app for finding soundboard.com boards and saving their sounds with clean filenames. Python: `soundboard-snag.py` holds the engine, a small local web server and the window shell; `web/` is the UI (vanilla JS/CSS, no build step) styled to look native: system font stack, system color keywords (`CanvasText`, `AccentColor`), native form controls, light/dark via `prefers-color-scheme`; no web fonts or frameworks. The app window loads it with `?app=1` so the page goes transparent over pywebview's vibrancy material. `assets/` holds the generated app icon. The window is pywebview (`requirements.txt`); everything else, including the unit tests, uses only the standard library.
 
 ## Commands
 

@@ -26,6 +26,7 @@ import filecmp
 import html
 import os
 import re
+import subprocess
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -1550,6 +1551,7 @@ def run_server(host, port, download_root, max_jobs=2, coordinator=None, on_ready
 APP_NAME = "Soundboard Snag"
 DEFAULT_DOWNLOAD_ROOT = "~/Downloads/Soundboard Snag"
 APP_SUPPORT_DIR = "~/Library/Application Support/Soundboard Snag"
+APP_ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "AppIcon.icns")
 
 
 def _install_download_hook(cocoa, AppKit, Foundation, WebKit, objc, coordinator):
@@ -1609,12 +1611,14 @@ def _install_download_hook(cocoa, AppKit, Foundation, WebKit, objc, coordinator)
 
 def run_desktop(download_root):
     """Open the app: the web UI in a native window, plus download windows on demand."""
+    download_root = os.path.expanduser(download_root)
     try:
         import AppKit
         import Foundation
         import objc
         import WebKit
         import webview
+        from webview.menu import Menu, MenuAction
         from webview.platforms import cocoa
     except ImportError:
         raise SystemExit(
@@ -1650,15 +1654,25 @@ def run_desktop(download_root):
         ready.set()
 
     threading.Thread(
-        target=run_server, args=("127.0.0.1", 0, os.path.expanduser(download_root)),
+        target=run_server, args=("127.0.0.1", 0, download_root),
         kwargs={"coordinator": coordinator, "on_ready": on_ready}, daemon=True).start()
     if not ready.wait(10):
         raise SystemExit("The local server did not start.")
     httpd = holder[0]
 
+    # Look native: the page sits on the system's translucent window material
+    # (?app=1 tells the page to drop its own background), the menu bar names the
+    # app, and File has the one command that is specific to it.
+    Foundation.NSBundle.mainBundle().infoDictionary()["CFBundleName"] = APP_NAME
+    Foundation.NSProcessInfo.processInfo().setProcessName_(APP_NAME)
     main_window = webview.create_window(
-        APP_NAME, "http://127.0.0.1:%d/" % httpd.server_address[1],
-        width=1100, height=820, min_size=(720, 560))
+        APP_NAME, "http://127.0.0.1:%d/?app=1" % httpd.server_address[1],
+        width=1100, height=820, min_size=(720, 560), vibrancy=True, transparent=True)
+
+    def open_downloads_folder():
+        os.makedirs(download_root, exist_ok=True)
+        subprocess.Popen(["open", download_root])
+    menu = [Menu("File", [MenuAction("Open Downloads Folder", open_downloads_folder)])]
 
     def on_main_closed():
         for token in list(windows):
@@ -1667,7 +1681,8 @@ def run_desktop(download_root):
 
     try:
         # Not private: the site's "verified" state then lasts across downloads.
-        webview.start(private_mode=False, storage_path=os.path.join(support, "webview"))
+        webview.start(menu=menu, icon=APP_ICON, private_mode=False,
+                      storage_path=os.path.join(support, "webview"))
     finally:
         httpd.shutdown()
 

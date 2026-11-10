@@ -32,7 +32,7 @@ Or build a double-clickable app:
 open "Soundboard Snag.app"
 ```
 
-Re-run the build script after moving the folder or upgrading Python.
+Re-run the build script after moving the folder or upgrading Python. The window uses the system's own fonts, colors, controls and translucent material, follows light and dark mode, and the File menu has **Open Downloads Folder**. The icon is `assets/AppIcon.icns`, drawn by `assets/make_icon.py` with AppKit (re-run it with `.venv/bin/python assets/make_icon.py` after changing the design).
 
 ### Options
 
