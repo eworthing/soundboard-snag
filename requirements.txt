@@ -1,0 +1,4 @@
+# Only the desktop window needs these; the engine, --serve mode and the unit
+# tests use the standard library alone.
+pywebview>=6.0,<7
+certifi

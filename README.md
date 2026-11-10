@@ -1,218 +1,64 @@
 # Soundboard Snag
 
-A Python tool to download audio files from soundboard.com with clean, normalized filenames.
+A macOS app for finding [soundboard.com](https://soundboard.com) boards and saving their sounds with clean filenames.
 
-## Features
+- **Search** boards with quality filters (minimum views and sounds), sorted by popularity or approximate update date.
+- **See the sounds** of each board right in the results.
+- **Click a sound to save it** to `~/Downloads/Soundboard Snag/<board>/` under a tidy name.
 
-- 🎯 **Smart Search**: Search for soundboards with quality filters
-- 📥 **Bulk Download**: Download all sounds from a board or search results
-- 🏷️ **Clean Filenames**: Automatically sanitizes and normalizes filenames
-- 🔍 **Quality Filters**: Filter by views and sound count (default: 10 views, 3 sounds minimum)
-- 🚀 **Fast & Efficient**: Dynamic pagination, early exit on failures
-- 🎨 **Colored Output**: Beautiful terminal output with progress tracking
-- 🛡️ **Smart Detection**: Automatically detects play-only boards
-- 💻 **Cross-Platform**: Works on Windows, macOS, and Linux
-- 📦 **Zero Dependencies**: Uses only Python standard library
+## How downloading works
+
+soundboard.com puts a "Verify you are human" check in front of every download. This app does **not** bypass it. Clicking a sound opens a small window with the site's own download page; if the site asks, you pass the check there, and the file is saved and the window closes by itself. The site remembers a passed check for a short while, so consecutive sounds are often one click each. The next unsaved sound is highlighted after each save, and **Get next sound** on a board saves it in one press.
+
+Search, board listings and approximate dates make ordinary page requests, paced and capped to stay polite (see `AGENTS.md`).
 
 ## Requirements
 
-- Python 3.6 or higher
-- No external dependencies required!
+- macOS 11.3 or later
+- Python 3.9 or later
 
-## Installation
-
-1. Clone this repository:
-```bash
-git clone https://github.com/yourusername/soundboard-snag.git
-cd soundboard-snag
-```
-
-2. Make the script executable (optional):
-```bash
-chmod +x soundboard-snag.py
-```
-
-## Usage
-
-### Search for Boards (Recommended First Step)
-
-Search automatically filters low-quality boards by default:
+## Install and run
 
 ```bash
-# Basic search
-python3 soundboard-snag.py --search "star wars"
-
-# Search with custom quality filters
-python3 soundboard-snag.py --search "hockey" --min-views 100 --min-sounds 10
-
-# Search without filters (show all results)
-python3 soundboard-snag.py --search "test" --min-views 0 --min-sounds 0
-
-# Search more boards
-python3 soundboard-snag.py --search "minecraft" --max 50
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python soundboard-snag.py
 ```
 
-### Download by Board Name
-
-After searching, download using the board name:
+Or build a double-clickable app:
 
 ```bash
-python3 soundboard-snag.py --board starwars
+./scripts/build-macos-app.sh
+open "Soundboard Snag.app"
 ```
 
-### Custom Download Location
+Re-run the build script after moving the folder or upgrading Python.
 
-Specify a custom root directory for downloads:
+### Options
+
+| Flag | Meaning |
+|---|---|
+| `-d, --download-root DIR` | Where sounds are saved (default `~/Downloads/Soundboard Snag`) |
+| `--serve` | Developer mode: serve the web UI headlessly on `--host`/`--port` (default `127.0.0.1:8765`) to open in any browser. Search works; downloads need the app window. |
+
+## Tests
+
+The unit tests are offline and need only the standard library:
 
 ```bash
-# Download to a custom location
-python3 soundboard-snag.py --board starwars --download-root ~/Music/Soundboards
-
-# Using short flag
-python3 soundboard-snag.py --board starwars -d /path/to/downloads
-
-# Works with search-and-download too
-python3 soundboard-snag.py --search-and-download "hockey" -d ~/Downloads/Sounds
-```
-
-### Search and Download All Results
-
-Search and automatically download all matching boards:
-
-```bash
-python3 soundboard-snag.py --search-and-download "hockey" --max 10
-```
-
-### Download by URL
-
-Download directly using a soundboard URL:
-
-```bash
-python3 soundboard-snag.py --url https://www.soundboard.com/sb/starwars
-```
-
-### Interactive Mode
-
-Run without arguments for interactive mode:
-
-```bash
-python3 soundboard-snag.py
-```
-
-## Command-Line Options
-
-| Option | Description |
-|--------|-------------|
-| `-s, --search` | Search for downloadable boards |
-| `--search-and-download` | Search and download all results automatically |
-| `-b, --board` | Download by board name |
-| `-u, --url` | Download by full URL |
-| `-d, --download-root` | Root directory for downloads (default: current directory) |
-| `--max` | Maximum boards to check in search (default: 20) |
-| `--min-views` | Minimum views required (default: 10, use 0 for no filter) |
-| `--min-sounds` | Minimum sounds required (default: 3, use 0 for no filter) |
-| `--include-dates` | Show approximate updated dates via Last-Modified headers |
-| `--recent-days N` | Only show boards updated within the last N days (approx) |
-| `--sort {views,recent}` | Sort search results by views (default) or recent update date |
-| `--date-sample-size N` | Track headers to check per board for dates (0 = as many as allowed; capped at 10 per board; default: 0) |
-| `--no-progress` | Disable realtime progress updates during searches |
-| `--verbose` | Show detailed steps, detection, parsing, and HTTP date checks |
-| `--log-file PATH` | Write a JSONL log of actions/events to a file |
-| `--debug` | Show all boards analyzed, including filtered ones |
-
-## Examples
-
-```bash
-# Search for popular Star Wars boards
-python3 soundboard-snag.py --search "star wars" --min-views 1000
-
-# Download a specific board
-python3 soundboard-snag.py --board R2D2_R2_D2_sounds
-
-# Download to a custom location
-python3 soundboard-snag.py --board starwars -d ~/Music/Soundboards
-
-# Search and download hockey boards
-python3 soundboard-snag.py --search-and-download "hockey" --max 5
-
-# Search and download to custom location
-python3 soundboard-snag.py --search-and-download "nature" --max 3 -d ~/Sounds
-
-# Debug mode to see filtering details
-python3 soundboard-snag.py --search "test" --debug
-```
-
-## Features in Detail
-
-### Quality Filters
-
-By default, search results are filtered to show only quality boards:
-- **Minimum 10 views**: Filters out brand new/untested boards
-- **Minimum 3 sounds**: Filters out incomplete/test boards
-
-Use `--min-views 0 --min-sounds 0` to disable filtering.
-
-### Smart Filename Handling
-
-- Decodes HTML entities (e.g., `&#039;` → `'`)
-- Removes UUID patterns from filenames
-- Normalizes spacing and punctuation
-- Handles Windows reserved names (CON, PRN, AUX, etc.)
-- Applies title case to all-lowercase or all-uppercase names
-- Cross-platform compatible sanitization
-
-### Download Protection
-
-- **Play-Only Detection**: Automatically detects boards with downloads disabled
-- **Consecutive Failure Exit**: Exits after 2 consecutive failures to avoid wasting resources
-- **Empty Directory Cleanup**: Removes empty directories if download fails immediately
-- **Rate Limiting**: Respects server with 0.5s delay between requests
-
-### Progress Tracking
-
-- Shows current progress: `[3/20]`
-- Displays file sizes: `(125.4 KB)`
-- Color-coded status: ✓ Success, ○ Skipped, ✗ Failed
-- Summary statistics at the end
-
-## Output
-
-Files are saved to a subfolder named after the board. By default, subfolders are created in your current directory, but you can specify a custom location with `--download-root`:
-
-```
-# Default location (current directory)
-./
-├── starwars/
-│   ├── R2-D2 Scream.mp3
-│   ├── Chewbacca Roar.mp3
-│   └── Lightsaber Sound.mp3
-└── hockey/
-    ├── Goal Horn.mp3
-    └── Skate Sound.mp3
-
-# Custom location (e.g., --download-root ~/Music/Soundboards)
-~/Music/Soundboards/
-├── starwars/
-│   ├── R2-D2 Scream.mp3
-│   └── ...
-└── hockey/
-    └── ...
+python3 -m unittest test_soundboard_snag
 ```
 
 ## Limitations
 
-- Only works with boards that have **download buttons enabled** by the owner
-- Boards in **play-only mode** cannot be downloaded (audio is access-controlled)
-- The script will detect and warn about restricted boards before attempting downloads
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+- Only boards whose owners enabled download buttons can be saved; play-only boards are skipped.
+- Dates are approximate: inferred from file `Last-Modified` headers on a few tracks per board.
+- The site can change its markup or protections at any time; the parsing is regular expressions over its HTML.
 
 ## License
 
-MIT License - see LICENSE file for details
+MIT License, see [LICENSE](LICENSE).
 
 ## Disclaimer
 
-This tool is for personal use only. Please respect copyright and the terms of service of soundboard.com. Only download content you have the right to access.
+For personal use. Respect copyright and soundboard.com's terms of service, and only save content you have the right to access.

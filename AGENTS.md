@@ -4,46 +4,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A single-file CLI tool that downloads audio from soundboard.com with cleaned-up filenames. Pure Python standard library, **zero third-party dependencies**, targets Python 3.6+. All real logic lives in `soundboard-snag.py` (~1650 lines). `debug_track_dates.py` is a standalone diagnostic.
+A macOS desktop app for finding soundboard.com boards and saving their sounds with clean filenames. Python: `soundboard-snag.py` holds the engine, a small local web server and the window shell; `web/` is the UI (vanilla JS/CSS, no build step). The window is pywebview (`requirements.txt`); everything else, including the unit tests, uses only the standard library.
 
 ## Commands
 
-There is no build system, test suite, or linter configured.
-
 ```bash
-# Syntax check (the de-facto "build" — used in .vscode/settings.json auto-approve)
-python3 -m py_compile soundboard-snag.py
-
-# Run it
-python3 soundboard-snag.py --search "star wars"
-python3 soundboard-snag.py --board starwars
-python3 soundboard-snag.py --search-and-download "hockey" --max 5 -d ~/Sounds
-
-# Inspect track ordering vs HTTP Last-Modified for one board
-python3 debug_track_dates.py <board-slug> --n 5
+python3 -m py_compile soundboard-snag.py            # syntax check
+python3 -m unittest test_soundboard_snag             # offline unit tests
+python3 soundboard-snag.py --serve --port 8765       # headless dev server: open the UI in any browser
+.venv/bin/python soundboard-snag.py                  # the real app (needs requirements.txt installed)
+./scripts/build-macos-app.sh                         # build "Soundboard Snag.app"
 ```
 
-Verify changes by running the script against a real board; there are no unit tests to run.
+There is no CLI any more. `--serve` exists only so the UI and search can be tested in a browser pane; it has no download windows. Verify downloads in the real app.
 
 ## Architecture
 
-Everything hangs off `main()` (argparse) which dispatches into one of four modes, checked in order: `--search-and-download`, `--search`, `--board`/`--url` download, or interactive prompt. There are two independent engines:
+`main()` runs `run_desktop()` (default) or `run_server()` (`--serve`).
 
-**`SoundboardSnag` class — single-board download pipeline.**
-`__init__(url)` parses the board slug/name from the URL, then `snag()` orchestrates:
-`_fetch_page` → `_check_downloads_enabled` (detects play-only boards before downloading) → `_parse_sound_items` (scrape sound IDs/titles from HTML) → loop `_snag_sound` per sound → `_extract_filename_from_headers` + `_sanitize_filename`. Files land in `<download_root>/<board-dirname>/`. `snag()` aborts early after 2 consecutive download failures.
+- **`run_desktop`**: starts `run_server` on an ephemeral loopback port in a thread, opens a pywebview window on it, and wires a `DownloadCoordinator` whose `open_window(token, url)` opens a second pywebview window for one sound's download page (`close_window(token)` closes it). `_install_download_hook` subclasses pywebview's macOS `BrowserDelegate` (must run before the first window is created, and checks the method it overrides exists) so an audio/attachment response whose URL belongs to a live job becomes a real `WKDownload`; its delegate asks the coordinator where to save. Not private mode: the site's "verified" state persists in `~/Library/Application Support/Soundboard Snag/webview`. `requirements.txt` pins pywebview below 7 because the hook relies on its internals.
+- **`DownloadCoordinator`**: pure bookkeeping per sound (`waiting → saving → saved | exists | cancelled | failed | expired`). Picks `<download_root>/<board>/<clean name>.<ext>`; a name clash is saved as `<name> (<sound id>)` and dropped again if byte-identical (so same-titled sounds aren't lost and repeats aren't duplicated). Never overwrites, removes partial files on failure, closes the window when a job ends, prunes old jobs. Unit-tested without any window.
+- **`run_server`**: `GET /api/search` (SSE), `GET /api/board/<board>`, `POST /api/fetch-sound`, `GET /api/fetch-sound/<token>`, static files from `web/`. State-changing POSTs check `Origin` and loopback peer. Fetched pages are cached 10 minutes (`cached_fetch`), so server tests need unique queries.
+- **`search_boards()`**: scrapes the search page, fetches each candidate board, applies filters (`_evaluate_filters`), optionally infers dates. Returns a list of `BoardResult` named tuples (`board_result_to_dict` serialises for the UI). Progress and diagnostics go out only through the `logger` event sink.
+- **`SoundboardSnag`**: parses a board URL; `_fetch_page`, `_check_downloads_enabled`, `_parse_sound_items`, `_sanitize_filename`, `_board_output_dirname`. It no longer downloads anything.
 
-**`search_boards()` — the big standalone function** (~720 lines, the most complex code here). Scrapes the search results page, fetches each candidate board, applies quality filters (`--min-views`, `--min-sounds`), and optionally infers approximate update dates. It **returns a list of fixed-shape 11-tuples**:
-`(board_name, has_downloads, sounds_info, total_count, board_desc, category, views, tags, views_int, approx_updated, approx_source)`.
-`main()` unpacks this positionally (search around line 1533) — **changing the tuple order/length breaks the caller silently**.
+## Cross-cutting details that matter
 
-### Cross-cutting details that matter
+- **Downloads are gated by a human check (seen 2026-11).** `GET /track/download/<id>` returns a Cloudflare Turnstile "Verify you are human" page; `HEAD` still returns audio headers, so date inference works. Never bypass the check and never make download requests from Python: only the app's own window requests them, driven by the user's click. Don't script loading download pages without a click.
+- **Date inference is best-effort and opt-in** (`include_dates`, `recent_days`, or `sort_by="recent"`). Dates come from `Last-Modified` on track download URLs, not real metadata. Helpers: `_fetch_last_modified_detailed`, `_parse_http_datetime`.
+- **soundboard.com URL conventions.** Board page `/sb/<slug>`, track `/track/download/<id>`, canonical host `soundboard.com` (`www.` redirects). Use `_quote_path_segment` for slugs; it keeps `%` safe.
+- **Network etiquette is intentional.** Spoofed `USER_AGENT`, `REQUEST_DELAY` (0.5s) between board requests, `HEADER_REQUEST_DELAY` (0.5s) between header probes, `HTTP_TIMEOUT`. Keep these when adding network calls. `search_boards` backs off: it stops on HTTP 403/429/5xx (`_site_says_stop`), checks at most `max(30, 3 × max_results)` boards, and makes at most `MAX_DATE_PROBES_PER_BOARD` (10) header probes per board, none after one is refused.
+- **Filename sanitization** (`_sanitize_filename`) decodes HTML entities, strips UUID patterns, title-cases all-upper/all-lower names, and rewrites `WINDOWS_RESERVED_NAMES` (CON, PRN, COM1…).
 
-- **Date inference is best-effort and opt-in.** Approximate "updated" dates come from HTTP `Last-Modified` headers on track download URLs, not real metadata. Gated behind the `include_dates` flag, which `main()` sets true if any of `--include-dates`, `--recent-days`, or `--sort recent` is present. `--date-sample-size` caps how many track headers get fetched per board (0 = as many as allowed; hard cap of 10 per board). Core helpers: `_fetch_last_modified_detailed`, `_parse_http_datetime`.
-- **soundboard.com URL conventions.** Board page: `/sb/<slug>`. Track download: `/track/download/<id>`. Use `_quote_path_segment` for slugs — it keeps `%` safe to avoid double-encoding already-percent-encoded names.
-- **Downloads are gated by a human check (seen 2026-11).** `GET /track/download/<id>` returns a Cloudflare Turnstile "Verify you are human" page for every client, real browsers included; `HEAD` still returns audio headers, so date inference works. Do not try to bypass it. `_snag_sound` detects the HTML page (`_is_html_response`), saves nothing, and `snag()` aborts after that one request and sets `blocked_by_verification`. The web UI then hands downloads to the user's browser: `POST /api/handoff` registers one pending sound with `BrowserDownloadWatcher`, which (when polled at `GET /api/handoff/<token>`) moves the next new audio file from `--browser-downloads` (default `~/Downloads`) into the board folder under its clean name.
-- **Network etiquette is intentional.** Spoofed `USER_AGENT`, `REQUEST_DELAY` (0.5s) between board requests, `HEADER_REQUEST_DELAY` (0.5s) between header probes, separate `HTTP_TIMEOUT` vs `DOWNLOAD_TIMEOUT`. Keep these when adding network calls. `search_boards` also backs off: it stops on HTTP 403/429/5xx (`_site_says_stop`), checks at most `max(30, 3 × max_results)` boards, and makes at most `MAX_DATE_PROBES_PER_BOARD` (10) header probes per board, none after one is refused. `run_server` caches fetched pages for 10 minutes (`cached_fetch`), so server tests must use unique queries.
-- **Filename sanitization** (`_sanitize_filename`) decodes HTML entities, strips UUID patterns, title-cases all-upper/all-lower names, and rewrites `WINDOWS_RESERVED_NAMES` (CON, PRN, COM1…) for cross-platform safety.
-- **Output channels:** `Colors` (ANSI), and `JsonlLogger` (one JSON object per line) wired via `--log-file`, threaded through `search_boards` as the `logger` arg.
-
-When editing the scrapers, remember all parsing is regex over raw HTML — it's tightly coupled to soundboard.com's current markup and will break if the site changes.
+All parsing is regex over raw HTML and tightly coupled to soundboard.com's current markup; it breaks if the site changes.

@@ -227,54 +227,6 @@ body {
   filter: drop-shadow(0 0 3px var(--led-amber));
 }
 
-.device-header__address {
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-  color: var(--text-dim);
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-}
-
-/* Stop button — shuts the local server down (the app's quit affordance). */
-.device-header__stop {
-  font-family: var(--font-mono);
-  font-size: 0.6rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--rec);
-  background: transparent;
-  border: 1px solid color-mix(in srgb, var(--rec) 45%, transparent);
-  border-radius: 6px;
-  padding: 3px 9px;
-  cursor: pointer;
-  touch-action: manipulation;
-  transition: background 160ms var(--ease-enter), border-color 160ms var(--ease-enter);
-}
-.device-header__stop:hover {
-  background: color-mix(in srgb, var(--rec) 14%, transparent);
-  border-color: var(--rec);
-}
-.device-header__stop:focus-visible {
-  outline: 2px solid var(--pad-lit);
-  outline-offset: 2px;
-}
-
-/* Terminal "server stopped" screen (replaces the page after Stop). */
-.stopped-screen {
-  min-height: 100dvh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--sp-2);
-  text-align: center;
-  font-family: var(--font-mono);
-  color: var(--text);
-  padding: var(--sp-4);
-}
-.stopped-screen strong { font-size: 1.1rem; color: var(--led-amber); }
-.stopped-screen span { color: var(--text-dim); font-size: 0.8rem; }
-
 /* ── Power-on animation: LED flicker → command-bar backlight ── */
 @keyframes led-flicker {
   0%   { opacity: 0; }
@@ -501,120 +453,6 @@ body {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   CLI MIRROR — SIGNATURE ELEMENT
-   Mono strip below the control strip.
-   $ + command + copy button | paste input on second line
-   ═══════════════════════════════════════════════════════════════ */
-.cli-mirror {
-  background: #11131a;
-  border: 1px solid var(--hairline);
-  border-top: none;
-  border-radius: 0 0 var(--r) var(--r);
-  padding: var(--sp-2) var(--sp-4);
-  margin-bottom: var(--sp-5);
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-}
-
-.cli-mirror__display {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-height: 26px;
-  overflow: hidden;
-}
-
-/* $ prompt — amber accent */
-.cli-mirror__dollar {
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  color: var(--led-amber);
-  flex-shrink: 0;
-  user-select: none;
-}
-
-/* The live command text — teal, scrollable, monospace */
-.cli-mirror__command {
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  color: var(--pad-lit);
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  letter-spacing: 0.02em;
-}
-
-/* Copy button — icon-only; border on hover */
-.cli-mirror__copy {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: 1px solid transparent;
-  border-radius: var(--r-sm);
-  color: var(--text-dim);
-  cursor: pointer;
-  padding: 3px 4px;
-  flex-shrink: 0;
-  touch-action: manipulation;
-  transition: color 150ms, border-color 150ms;
-}
-
-.cli-mirror__copy:hover {
-  color: var(--pad-lit);
-  border-color: var(--hairline);
-}
-
-/* Copied state — brief teal flash */
-.cli-mirror__copy.is-copied {
-  color: var(--pad-lit);
-}
-
-/* Paste / reverse mode */
-.cli-mirror__reverse {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-height: 20px;
-}
-
-.cli-mirror__reverse-label {
-  font-family: var(--font-mono);
-  font-size: 0.6rem;
-  color: var(--text-dim);
-  white-space: nowrap;
-  flex-shrink: 0;
-  opacity: 0.7;
-}
-
-.cli-mirror__reverse-input {
-  background: transparent;
-  border: none;
-  border-bottom: 1px solid rgba(51, 58, 69, 0.6);
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  padding: 1px 2px;
-  flex: 1;
-  min-width: 0;
-  outline: none;
-  caret-color: var(--pad-lit);
-  transition: border-color 150ms;
-}
-
-.cli-mirror__reverse-input::placeholder {
-  color: rgba(127, 135, 148, 0.45);
-  font-size: 0.68rem;
-}
-
-.cli-mirror__reverse-input:focus {
-  border-bottom-color: var(--pad-lit);
-}
-
-/* ═══════════════════════════════════════════════════════════════
    RACK — results area
    ═══════════════════════════════════════════════════════════════ */
 .rack__header {
@@ -775,24 +613,6 @@ body {
     inset 0 0 20px rgba(53, 224, 196, 0.05);
 }
 
-/* Grab success — single teal pulse then fade back */
-@keyframes pad-grab-pulse {
-  0%   { box-shadow: 0 0 0 1px var(--pad-lit); border-color: var(--pad-lit); }
-  50%  {
-    box-shadow:
-      0 0 0 3px rgba(53, 224, 196, 0.5),
-      0 0 24px rgba(53, 224, 196, 0.35),
-      inset 0 0 24px rgba(53, 224, 196, 0.12);
-    border-color: var(--pad-lit);
-    background: rgba(53, 224, 196, 0.06);
-  }
-  100% { box-shadow: none; border-color: var(--hairline); background: var(--chassis-raised); }
-}
-
-.pad.just-grabbed {
-  animation: pad-grab-pulse 0.9s var(--ease-exit) forwards;
-}
-
 /* Pad enter animation (used on each pad as it renders from results) */
 @keyframes pad-enter {
   from { opacity: 0; transform: translateY(6px); }
@@ -840,41 +660,6 @@ body {
   background: center / 46px no-repeat
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='44' height='24' fill='%23d8d4c8'%3E%3Crect x='2' y='8' width='4' height='8' rx='1'/%3E%3Crect x='10' y='4' width='4' height='16' rx='1'/%3E%3Crect x='18' y='10' width='4' height='4' rx='1'/%3E%3Crect x='26' y='2' width='4' height='20' rx='1'/%3E%3Crect x='34' y='7' width='4' height='10' rx='1'/%3E%3C/svg%3E");
   opacity: 0.16;
-}
-
-/* ── LED row ── */
-.pad__led-row {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  margin-bottom: var(--sp-2);
-}
-
-/*
-  LED shape: filled circle = downloads enabled (amber glow)
-             stroke-only ring = play-only (dim)
-  Color is NEVER the sole signal — the text label "play-only · no downloads"
-  is always present alongside the dim ring.
-*/
-.pad__led {
-  flex-shrink: 0;
-  display: block;
-}
-
-.pad__led--on circle {
-  /* Amber glow via drop-shadow on the SVG element itself */
-}
-.pad__led--on {
-  filter: drop-shadow(0 0 3px rgba(255, 157, 46, 0.8));
-}
-
-/* play-only label — red, small, mono */
-.pad__led-label {
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  color: var(--rec);
-  letter-spacing: 0.04em;
-  line-height: 1;
 }
 
 /* ── Board name ── */
@@ -951,22 +736,6 @@ body {
   min-width: 66px;
 }
 
-/* Per-file download progress text: tabular "3 / 88" */
-.pad__progress {
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-dim);
-  text-align: right;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  display: none;
-}
-
-.pad__progress.is-visible { display: block; }
-
 /* ── Sound chips (pad expand view) ── */
 .pad__sounds {
   border-top: 1px solid var(--hairline);
@@ -1010,13 +779,7 @@ body {
 }
 .sound-chip.is-saved::before { content: "\2713  "; }          /* ✓ */
 .sound-chip.is-error { color: var(--rec); border-color: color-mix(in srgb, var(--rec) 55%, transparent); }
-.sound-chip.is-error::before { content: "\2717  "; }          /* ✗ */
-/* Downloads gated by soundboard.com's human check: chips open in the browser */
-body.downloads-gated .sound-chip::before { content: "\2197  "; }  /* ↗ */
-body.downloads-gated .sound-chip.is-downloading::before { content: "\2026  "; }  /* … waiting for the browser */
-body.downloads-gated .sound-chip.is-saved::before { content: "\2713  "; }        /* ✓ */
-.sound-chip.sound-chip--more::before,
-body.downloads-gated .sound-chip.sound-chip--more::before { content: ""; }
+.sound-chip.is-error::before { content: "\2717  "; }
 .sound-chip.is-next { color: var(--text); border-color: var(--pad-lit); }
 @media (prefers-reduced-motion: reduce) { .sound-chip { transition: none; } }
 

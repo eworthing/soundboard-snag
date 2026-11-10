@@ -2,13 +2,15 @@
  * app.js — Soundboard Snag web UI
  *
  * Vanilla JS, no build step, no dependencies.
- * Assumes the server exposes:
+ * Talks to the app's local server:
  *   GET  /api/search?q=&max=&min_views=&min_sounds=&sort=&include_dates=&recent_days=
- *          → SSE stream
- *   POST /api/download   body: {board, download_root?}
  *          → SSE stream
  *   GET  /api/board/<board>
  *          → JSON {board, has_downloads, total_count, sounds:[{id,title}], error|null}
+ *   POST /api/fetch-sound   body: {board, sound_id, title}
+ *          → {token}; the app opens the sound's download window
+ *   GET  /api/fetch-sound/<token>
+ *          → {status: waiting|saving|saved|exists|cancelled|failed|expired, name?, kb?, error?}
  *
  * When no server is running, the UI renders the empty-state gracefully
  * and fetch errors surface as toasts.
@@ -33,58 +35,30 @@ const padMap = new Map();
 let lastResults = [];
 let lastQuery   = '';
 
-/** In-flight downloads (board id → AbortController) so Stop can cancel them. */
-const activeDownloads = new Map();
-
-// soundboard.com gates every download behind a "Verify you are human" check
-// that this tool does not bypass. Once the server reports that, sounds and
-// boards open on soundboard.com in a new browser tab instead, where the user
-// passes the check themself and the browser saves the file.
-const SITE_URL = 'https://soundboard.com';
-// Starts true: the check is on every download today, so the first click
-// already opens the browser instead of failing once. Set false to make the
-// UI try direct server-side downloads first (it flips back on a blocked one).
-let downloadsGated = true;
-document.body.classList.toggle('downloads-gated', downloadsGated);
-const padButtonLabel = () => (downloadsGated ? 'Get next sound' : 'Grab');
-let handoffHintShown = false;
-
-function markDownloadsGated() {
-  if (downloadsGated) return;
-  downloadsGated = true;
-  document.body.classList.add('downloads-gated');
-  showToast(
-    'soundboard.com now asks you to verify you are human before each download. ' +
-    'Click a sound to open it in your browser — once it downloads, it is renamed and filed here for you.',
-    'error'
-  );
-}
-
-function openInBrowser(url) {
-  window.open(url, '_blank', 'noopener');
-}
-
-const HANDOFF_POLL_MS = 1500;
+const SOUND_POLL_MS = 1000;
+let saveHintShown = false;
 
 /**
- * Gated-mode download of one sound: open its soundboard.com download page in a
- * new tab (the user passes the human check there), ask the local server to
- * watch the browser's download folder, and poll until the file has been
- * renamed and moved into the board's folder. Then cue the next sound.
+ * Save one sound. The app opens soundboard.com's download page in its own
+ * window (the person passes the site's "verify you are human" check there if
+ * it asks), the file lands in the board's folder under a clean name, and the
+ * window closes. Poll until it's done, then cue the next sound.
  */
-async function handOffSound(chip, board, soundId, title) {
-  if (!/^\d+$/.test(soundId)) return;
-  // Opened synchronously in the click handler so pop-up blockers allow it.
-  openInBrowser(`${SITE_URL}/track/download/${soundId}`);
-
+async function fetchSound(chip, board, soundId, title) {
+  if (!/^\d+$/.test(soundId) || chip.dataset.busy) return;
+  chip.dataset.busy = '1';
   const soundsEl = chip.parentElement;
   chip.classList.remove('is-error', 'is-next');
   chip.classList.add('is-downloading');
-  const stopWaiting = () => chip.classList.remove('is-downloading');
+  const finish = (cls) => {
+    delete chip.dataset.busy;
+    chip.classList.remove('is-downloading');
+    if (cls) chip.classList.add(cls);
+  };
 
   let token = null;
   try {
-    const resp = await fetch('/api/handoff', {
+    const resp = await fetch('/api/fetch-sound', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ board, sound_id: soundId, title }),
@@ -92,17 +66,18 @@ async function handOffSound(chip, board, soundId, title) {
     const data = await resp.json().catch(() => ({}));
     token = data.token || null;
     if (!token) {
-      stopWaiting();
-      showToast(`Opened in your browser, but can't file it automatically${data.error ? ' — ' + data.error : ''}.`, 'error');
+      finish('is-error');
+      showToast(`Couldn't start that sound — ${data.error || `error ${resp.status}`}`, 'error');
       return;
     }
   } catch (_) {
-    stopWaiting();
+    finish('is-error');
+    showToast('Couldn\'t reach the app — try again.', 'error');
     return;
   }
 
   for (;;) {
-    await new Promise(r => setTimeout(r, HANDOFF_POLL_MS));
+    await new Promise(r => setTimeout(r, SOUND_POLL_MS));
     if (!chip.isConnected) {
       // The chip list was re-rendered (full list loaded): find this sound again.
       chip = soundsEl.querySelector(`.sound-chip[data-id="${soundId}"]`);
@@ -110,25 +85,31 @@ async function handOffSound(chip, board, soundId, title) {
     }
     let st;
     try {
-      st = await (await fetch(`/api/handoff/${encodeURIComponent(token)}`)).json();
+      st = await (await fetch(`/api/fetch-sound/${encodeURIComponent(token)}`)).json();
     } catch (_) {
-      stopWaiting();
+      finish('is-error');
       return;
     }
-    if (st.status === 'waiting') continue;
-    stopWaiting();
+    if (st.status === 'waiting' || st.status === 'saving') continue;
     if (st.status === 'saved' || st.status === 'exists') {
-      chip.classList.add('is-saved');
+      finish('is-saved');
       showToast(st.status === 'exists' ? `Already saved: ${st.name}` : `Saved ${st.name}`, 'success');
       cueNextChip(chip);
-    } else if (st.status === 'expired') {
-      showToast(`Stopped waiting for "${title}" — click it to try again.`, 'error');
+    } else if (st.status === 'failed') {
+      finish('is-error');
+      showToast(`Couldn't save "${title}"${st.error ? ' — ' + st.error : ''}.`, 'error');
+    } else if (st.status === 'cancelled') {
+      finish();
+      showToast(`Download window closed — click "${title}" to try again.`, '');
+    } else {
+      finish();
+      showToast(`Gave up waiting for "${title}" — click it to try again.`, 'error');
     }
-    return;  // 'replaced' / 'unknown': another sound took over
+    return;
   }
 }
 
-/** Highlight and focus the next sound that isn't saved yet (Enter grabs it). */
+/** Highlight and focus the next sound that isn't saved yet (Enter saves it). */
 function cueNextChip(fromChip) {
   const chips = [...fromChip.parentElement.querySelectorAll('.sound-chip[data-id]')];
   chips.forEach(c => c.classList.remove('is-next'));
@@ -158,9 +139,6 @@ const minSoundsInput  = $('min-sounds');
 const maxInput        = $('max-results');
 const sortSelect      = $('sort-order');
 const includeDates    = $('include-dates');
-const cliCommandEl    = $('cli-command');
-const copyBtn         = $('copy-cmd');
-const cliPasteInput   = $('cli-paste');
 const padGrid         = $('pad-grid');
 const rackEmpty       = $('rack-empty');
 const rackCount       = $('rack-count');
@@ -169,7 +147,6 @@ const rackEl          = $('rack');
 const toastContainer  = $('toast-container');
 const powerLed        = $('power-led');
 const commandBar      = $('command-bar');
-const serverAddress   = $('server-address');
 
 /* ═══════════════════════════════════════════════════════════════
    SSE HELPER
@@ -188,24 +165,12 @@ const serverAddress   = $('server-address');
  *
  * @param {string} url
  * @param {object} opts
- * @param {string}   [opts.method='GET']
- * @param {string}   [opts.body=null]     JSON string for POST
  * @param {AbortSignal} opts.signal        required — connect to AbortController
  * @param {function} opts.onEvent         called as onEvent(type, dataObject)
  * @returns {Promise<void>}  resolves when stream ends; rejects on network error
  */
-async function streamSSE(url, { method = 'GET', body = null, signal, onEvent }) {
-  const init = {
-    method,
-    headers: { Accept: 'text/event-stream' },
-    signal,
-  };
-  if (body != null) {
-    init.headers['Content-Type'] = 'application/json';
-    init.body = body;
-  }
-
-  const resp = await fetch(url, init);
+async function streamSSE(url, { signal, onEvent }) {
+  const resp = await fetch(url, { headers: { Accept: 'text/event-stream' }, signal });
 
   if (!resp.ok) {
     // Non-2xx — attempt to extract server error message
@@ -261,162 +226,6 @@ async function streamSSE(url, { method = 'GET', body = null, signal, onEvent }) 
       onEvent(evType, parsed);
     }
   }
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   CLI MIRROR — build and parse
-   ═══════════════════════════════════════════════════════════════ */
-
-/**
- * Quote a string for insertion into a shell command.
- * If the string contains spaces or shell-special characters, wraps it
- * in double quotes and escapes any internal double quotes.
- */
-function shellQuote(s) {
-  if (/[\s"'\\&|;<>()$`!#*?{}[\]~]/.test(s)) {
-    return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-  }
-  return s;
-}
-
-/**
- * Build the exact runnable CLI command from the current control state.
- * Flags are omitted when they equal their default values (cleaner output).
- * Matches the behaviour of main() in soundboard-snag.py.
- */
-function buildCliCommand() {
-  const q      = searchInput.value.trim();
-  const minV   = minViewsInput.value.trim();
-  const minS   = minSoundsInput.value.trim();
-  const max    = maxInput.value.trim();
-  const sort   = sortSelect.value;
-  const dates  = includeDates.checked;
-
-  const parts = ['soundboard-snag.py'];
-
-  if (q)                      parts.push(`--search ${shellQuote(q)}`);
-  if (minV && minV !== '0')   parts.push(`--min-views ${minV}`);
-  if (minS && minS !== '0')   parts.push(`--min-sounds ${minS}`);
-  if (max  && max  !== '20')  parts.push(`--max ${max}`);
-  if (sort && sort !== 'views') parts.push(`--sort ${sort}`);
-
-  // --sort recent implies --include-dates on the CLI side; only add it
-  // standalone when sorting by views (avoids redundancy).
-  if (dates && sort !== 'recent') parts.push('--include-dates');
-
-  return parts.join(' ');
-}
-
-/** Update the CLI mirror display element. */
-function refreshCliMirror() {
-  cliCommandEl.textContent = buildCliCommand();
-}
-
-/**
- * Minimal shell tokeniser that handles single and double quotes.
- * Returns an array of token strings (flags and their values).
- * Used by parseAndApplyCommand for the reverse-mode paste.
- */
-function tokenizeShell(input) {
-  const tokens = [];
-  let   i      = 0;
-
-  while (i < input.length) {
-    // Skip whitespace between tokens
-    while (i < input.length && /\s/.test(input[i])) i++;
-    if (i >= input.length) break;
-
-    let token = '';
-    const q = input[i];
-
-    if (q === '"' || q === "'") {
-      i++; // skip opening quote
-      while (i < input.length && input[i] !== q) {
-        // Handle backslash escapes inside double-quoted strings
-        if (input[i] === '\\' && q === '"' && i + 1 < input.length) {
-          i++;
-          token += input[i++] ?? '';
-        } else {
-          token += input[i++];
-        }
-      }
-      i++; // skip closing quote (or end-of-string if unmatched)
-    } else {
-      // Unquoted: consume until whitespace
-      while (i < input.length && !/\s/.test(input[i])) {
-        token += input[i++];
-      }
-    }
-
-    if (token.length) tokens.push(token);
-  }
-
-  return tokens;
-}
-
-/**
- * Parse a `soundboard-snag.py …` command string and apply its flags
- * to the UI controls. Best-effort: unknown flags and args are skipped.
- *
- * Both `python3 soundboard-snag.py …` and bare `soundboard-snag.py …`
- * are accepted.
- */
-function parseAndApplyCommand(rawCmd) {
-  const cmd = rawCmd.trim();
-  if (!cmd) return;
-
-  // Strip the interpreter + script name prefix
-  const stripped = cmd.replace(/^(python3?\s+)?soundboard-snag\.py\s*/, '').trim();
-  const tokens   = tokenizeShell(stripped);
-
-  // Reset controls to defaults before applying parsed values
-  searchInput.value   = '';
-  minViewsInput.value = '';
-  minSoundsInput.value = '';
-  maxInput.value      = '20';
-  sortSelect.value    = 'views';
-  includeDates.checked = false;
-
-  let i = 0;
-  while (i < tokens.length) {
-    const tok = tokens[i];
-
-    switch (tok) {
-      case '--search':
-      case '-s':
-        searchInput.value = tokens[++i] ?? '';
-        break;
-      case '--min-views':
-        minViewsInput.value = tokens[++i] ?? '';
-        break;
-      case '--min-sounds':
-        minSoundsInput.value = tokens[++i] ?? '';
-        break;
-      case '--max':
-        maxInput.value = tokens[++i] ?? '20';
-        break;
-      case '--sort':
-        sortSelect.value = tokens[++i] ?? 'views';
-        break;
-      case '--include-dates':
-        includeDates.checked = true;
-        break;
-      case '--recent-days':
-        // Legacy hard cutoff is gone — map it to "sort by recently updated".
-        i++;  // consume the day count
-        sortSelect.value = 'recent';
-        break;
-      default:
-        // Unknown flag: if the next token looks like a value (not a flag),
-        // consume it so we stay in sync.
-        if (tok.startsWith('-') && i + 1 < tokens.length && !tokens[i + 1].startsWith('-')) {
-          i++;
-        }
-    }
-    i++;
-  }
-
-  refreshCliMirror();
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -521,12 +330,9 @@ function createPad(board, animDelay = 0) {
     ? `<button
          type="button"
          class="btn btn--primary pad__grab"
-         aria-label="${padButtonLabel()} from ${escHtml(board.name)}"
+         aria-label="Save the next sound from ${escHtml(board.name)}"
        >
-         <span class="grab-label">${padButtonLabel()}</span>
-         <svg class="grab-spinner" width="13" height="13" viewBox="0 0 13 13" aria-hidden="true" focusable="false">
-           <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" stroke-width="2.2" fill="none" stroke-dasharray="20" stroke-dashoffset="7"/>
-         </svg>
+         <span class="grab-label">Get next sound</span>
        </button>`
     : `<span class="pad__stat" style="color:var(--rec);font-size:0.62rem;">play-only</span>`;
 
@@ -555,7 +361,6 @@ function createPad(board, animDelay = 0) {
     ${tagsHtml ? `<div class="pad__tags">${tagsHtml}</div>` : ''}
     <div class="pad__footer">
       ${grabHtml}
-      <span class="pad__progress" aria-live="polite" aria-atomic="true"></span>
     </div>
     <!-- Sound chips — filled from the search result, or on expand -->
     <div class="pad__sounds" hidden></div>
@@ -592,7 +397,7 @@ function createPad(board, animDelay = 0) {
   if (grabBtn) {
     grabBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      startDownload(el, board);
+      getNextSound(el, board);
     });
   }
 
@@ -620,7 +425,7 @@ function renderChips(padEl, board, sounds, totalCount) {
     if (state.has(chip.dataset.id)) chip.className = state.get(chip.dataset.id);
     chip.addEventListener('click', (e) => {
       e.stopPropagation();  // don't collapse the pad
-      downloadSound(chip, board.board, chip.dataset.id, chip.dataset.title);
+      fetchSound(chip, board.board, chip.dataset.id, chip.dataset.title);
     });
   });
   const missing = (Number(totalCount) || 0) - sounds.length;
@@ -700,229 +505,33 @@ async function loadAllSounds(padEl, board) {
   }
 }
 
-/**
- * Download a single sound (one chip click). POST /api/download-sound returns a
- * small JSON result; reflect it on the chip + a toast.
- */
-async function downloadSound(chip, board, soundId, title) {
-  if (chip.dataset.busy) return;
-  if (downloadsGated) {
-    handOffSound(chip, board, soundId, title);
-    return;
-  }
-  chip.dataset.busy = '1';
-  chip.classList.add('is-downloading');
-  try {
-    const resp = await fetch('/api/download-sound', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ board, sound_id: soundId, title }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    chip.classList.remove('is-downloading');
-    if (resp.ok && (data.status === 'saved' || data.status === 'exists')) {
-      chip.classList.add('is-saved');
-      showToast(
-        data.status === 'exists' ? `Already saved: ${data.name}` : `Saved ${data.name}`,
-        'success'
-      );
-    } else if (data.blocked) {
-      markDownloadsGated();
-    } else {
-      chip.classList.add('is-error');
-      const why = data.error || (resp.status === 503 ? 'server busy' : `error ${resp.status}`);
-      showToast(`Couldn't save that sound — ${why}`, 'error');
-    }
-  } catch (_) {
-    chip.classList.remove('is-downloading');
-    chip.classList.add('is-error');
-    showToast('Couldn\'t reach soundboard.com — check your connection and try again.', 'error');
-  } finally {
-    delete chip.dataset.busy;
-  }
-}
-
 /* ═══════════════════════════════════════════════════════════════
-   DOWNLOAD — POST /api/download  →  SSE events
+   GET NEXT SOUND — the pad button
    ═══════════════════════════════════════════════════════════════ */
 
-async function startDownload(padEl, board) {
-  const grabBtn    = padEl.querySelector('.pad__grab');
-  const progressEl = padEl.querySelector('.pad__progress');
-
-  if (!grabBtn || grabBtn.disabled) return;
-
-  if (downloadsGated) {
-    // Can't grab a whole board past the human check: show its sounds and cue
-    // the first one that isn't saved yet.
-    // A whole board can't be grabbed past the human check, so each press
-    // starts the next sound that isn't saved yet.
-    const pick = () => padEl.querySelector('.sound-chip[data-id]:not(.is-saved):not(.is-downloading)');
-    let next = pick();
-    if (next) {
-      padEl.querySelector('.pad__sounds').hidden = false;
-      padEl.setAttribute('aria-expanded', 'true');
-      handOffSound(next, board.board, next.dataset.id, next.dataset.title);
-      return;
-    }
-    if (!padEl.dataset.soundsLoaded) {
-      // Sounds not on the page yet: load them, then cue the first (a tab can
-      // only be opened straight from a click, so it takes one more press).
-      if (padEl.getAttribute('aria-expanded') !== 'true') await toggleSounds(padEl, board);
-      else await loadAllSounds(padEl, board);
-      next = pick();
-      if (next) { next.classList.add('is-next'); next.focus(); }
-      return;
-    }
-    if (padEl.querySelector('.sound-chip.is-downloading')) {
-      showToast('Still waiting for the sound that is open in your browser.', '');
-    } else {
-      showToast('All sounds on this board are saved.', 'success');
-    }
+/**
+ * Whole boards can't be grabbed in one go (every sound needs its own human
+ * check), so the pad button saves the next sound that isn't saved yet.
+ */
+async function getNextSound(padEl, board) {
+  if (padEl.querySelector('.sound-chip.is-downloading')) {
+    showToast('Still saving a sound from this board. Finish it first.', '');
     return;
   }
-
-  grabBtn.classList.add('is-loading');
-  grabBtn.disabled = true;
-  progressEl.classList.add('is-visible');
-  progressEl.textContent = 'Starting…';
-
-  const dlAbort = new AbortController();
-  activeDownloads.set(board.board, dlAbort);
-
-  try {
-    await streamSSE('/api/download', {
-      method: 'POST',
-      body:   JSON.stringify({ board: board.board }),
-      signal: dlAbort.signal,
-      onEvent(type, data) {
-        switch (type) {
-
-          // Download began; we know total sound count
-          case 'download_start':
-            progressEl.textContent = `0 / ${data.total}`;
-            break;
-
-          // Board HTML parsed (count confirmed)
-          case 'board_parsed':
-            if (data.count != null) {
-              progressEl.textContent = `0 / ${data.count}`;
-            }
-            break;
-
-          // Individual file events — show "i / n" in mono tabular style
-          case 'file_start':
-            progressEl.textContent = `file ${data.i} / ${data.n}`;
-            break;
-
-          case 'file_saved':
-            progressEl.textContent = `${data.i} / ${data.n} · ${escHtml(data.name)}`;
-            break;
-
-          case 'file_skipped':
-            progressEl.textContent = `${data.i} / ${data.n} · skipped`;
-            break;
-
-          case 'file_failed':
-            progressEl.textContent = `${data.i} / ${data.n} · failed`;
-            break;
-
-          // Done — pulse the pad teal and toast
-          case 'download_complete':
-            handleDownloadComplete(padEl, grabBtn, progressEl, data);
-            break;
-
-          // Server cancelled the download mid-run
-          case 'download_aborted':
-            if (data.blocked) {
-              progressEl.textContent = 'Needs human check — open in browser';
-              markDownloadsGated();
-            } else {
-              progressEl.textContent = `Aborted: ${data.reason || 'cancelled'}`;
-            }
-            resetGrabBtn(grabBtn, progressEl, 3500);
-            break;
-
-          // Fatal download error
-          case 'download_error':
-            showToast(
-              data.error
-                ? `Download error: ${data.error}`
-                : 'Couldn\'t reach soundboard.com — check your connection and try again.',
-              'error'
-            );
-            resetGrabBtn(grabBtn, progressEl, 0);
-            break;
-
-          // Server at concurrency cap
-          case 'busy':
-            showToast('Server is busy — try again in a moment.', 'error');
-            resetGrabBtn(grabBtn, progressEl, 0);
-            break;
-        }
-      },
-    });
-  } catch (err) {
-    if (err.name === 'AbortError') {
-      // User navigated away / clicked Stop — silent
-    } else {
-      showToast('Couldn\'t reach soundboard.com — check your connection and try again.', 'error');
-      resetGrabBtn(grabBtn, progressEl, 0);
-    }
-  } finally {
-    activeDownloads.delete(board.board);
+  const pick = () => padEl.querySelector('.sound-chip[data-id]:not(.is-saved)');
+  let next = pick();
+  if (!next && !padEl.dataset.soundsLoaded) {
+    if (padEl.getAttribute('aria-expanded') !== 'true') await toggleSounds(padEl, board);
+    else await loadAllSounds(padEl, board);
+    next = pick();
   }
-}
-
-/**
- * Handle a successful download_complete event.
- * Pulses the pad teal, toasts the result, resets the button.
- */
-function handleDownloadComplete(padEl, grabBtn, progressEl, data) {
-  const { snagged = 0, existing = 0, failed = 0 } = data;
-
-  // Button: Grab → Grabbed (briefly), then back to Grab
-  grabBtn.classList.remove('is-loading');
-  grabBtn.disabled = false;
-  const labelEl = grabBtn.querySelector('.grab-label');
-  if (labelEl) labelEl.textContent = 'Grabbed';
-
-  // Teal pulse on the pad
-  padEl.classList.add('just-grabbed');
-  padEl.addEventListener('animationend', () => {
-    padEl.classList.remove('just-grabbed');
-  }, { once: true });
-
-  // Build toast message
-  const soundWord = snagged === 1 ? 'sound' : 'sounds';
-  let msg = `Grabbed ${snagged} ${soundWord}`;
-  if (existing > 0) msg += ` (${existing} already existed)`;
-  if (failed > 0)   msg += `, ${failed} failed`;
-  if (data.path)    msg += ` → ${data.path}`;
-  showToast(msg, 'success');
-
-  // Reset after 4s
-  setTimeout(() => {
-    progressEl.textContent = '';
-    progressEl.classList.remove('is-visible');
-    if (labelEl) labelEl.textContent = padButtonLabel();
-  }, 4000);
-}
-
-/** Reset a GRAB button + progress span back to idle state. */
-function resetGrabBtn(grabBtn, progressEl, delayMs) {
-  const reset = () => {
-    grabBtn.classList.remove('is-loading');
-    grabBtn.disabled = false;
-    progressEl.textContent = '';
-    progressEl.classList.remove('is-visible');
-    const labelEl = grabBtn.querySelector('.grab-label');
-    if (labelEl) labelEl.textContent = padButtonLabel();
-  };
-  if (delayMs > 0) {
-    setTimeout(reset, delayMs);
+  if (next) {
+    padEl.querySelector('.pad__sounds').hidden = false;
+    padEl.classList.add('pad--active');
+    padEl.setAttribute('aria-expanded', 'true');
+    fetchSound(next, board.board, next.dataset.id, next.dataset.title);
   } else {
-    reset();
+    showToast('All sounds on this board are saved.', 'success');
   }
 }
 
@@ -1046,26 +655,6 @@ async function startSearch(query) {
  * Insert a board as a real pad in place of the next skeleton.
  * Used when progress events carry full board data.
  */
-function insertProgressivePad(board) {
-  if (padMap.has(board.board)) return; // already shown
-
-  const skeleton = padGrid.querySelector('.pad--skeleton');
-  const delay    = padMap.size * 40; // gentle stagger
-  const pad      = createPad(board, delay);
-
-  if (skeleton) {
-    padGrid.replaceChild(pad, skeleton);
-  } else {
-    padGrid.appendChild(pad);
-  }
-
-  padMap.set(board.board, pad);
-}
-
-/**
- * After the `results` event: clear remaining skeletons and add any
- * boards from the final array that aren't already in the grid.
- */
 /** Render one board's pad as soon as it's found (progressive streaming). */
 function renderProgressive(board) {
   if (!board || !board.has_downloads || padMap.has(board.board)) return;
@@ -1163,9 +752,9 @@ function finishSearch(resultCount) {
     // Cue the first sound, and explain the browser hand-off once per page.
     const firstChip = padGrid.querySelector('.sound-chip[data-id]:not(.is-saved)');
     if (firstChip && !padGrid.querySelector('.sound-chip.is-next')) firstChip.classList.add('is-next');
-    if (downloadsGated && firstChip && !handoffHintShown) {
-      handoffHintShown = true;
-      showToast('Click a sound: it opens in your browser. Pass the check there and it is renamed and filed here.', '');
+    if (firstChip && !saveHintShown) {
+      saveHintShown = true;
+      showToast('Click a sound to save it. soundboard.com may ask you to verify you are human in a small window first.', '');
     }
   } else if (padGrid.children.length === 0) {
     // Nothing to show
@@ -1243,65 +832,8 @@ searchForm.addEventListener('submit', (e) => {
   startSearch(q);
 });
 
-// All controls → refresh the CLI mirror on any change
-[minViewsInput, minSoundsInput, maxInput, sortSelect, includeDates, searchInput]
-  .forEach(el => {
-    el.addEventListener('input',  refreshCliMirror);
-    el.addEventListener('change', refreshCliMirror);
-  });
-
 // Sort control → re-order results already on screen (no re-search for views).
 sortSelect.addEventListener('change', applySortChange);
-
-// Stop button → shut down the local server (this is how you "quit" the app).
-const stopServerBtn = document.getElementById('stop-server');
-if (stopServerBtn) {
-  stopServerBtn.addEventListener('click', async () => {
-    stopServerBtn.disabled = true;
-    if (searchAbort) searchAbort.abort();
-    // Cancel any in-flight downloads so files stop landing after "quit".
-    activeDownloads.forEach(c => c.abort());
-    activeDownloads.clear();
-    try { await fetch('/api/shutdown', { method: 'POST' }); } catch (_) { /* server going down */ }
-    document.body.innerHTML =
-      '<div class="stopped-screen"><strong>Server stopped.</strong>' +
-      '<span>You can close this tab. Re-open Soundboard Snag to start again.</span></div>';
-  });
-}
-
-// Copy CLI command to clipboard
-copyBtn.addEventListener('click', async () => {
-  const text = cliCommandEl.textContent;
-  try {
-    await navigator.clipboard.writeText(text);
-    copyBtn.classList.add('is-copied');
-    copyBtn.setAttribute('aria-label', 'Copied!');
-    setTimeout(() => {
-      copyBtn.classList.remove('is-copied');
-      copyBtn.setAttribute('aria-label', 'Copy command to clipboard');
-    }, 1500);
-  } catch (_) {
-    // Clipboard API unavailable — fall back to selecting the text
-    const range = document.createRange();
-    range.selectNode(cliCommandEl);
-    const sel = window.getSelection();
-    if (sel) {
-      sel.removeAllRanges();
-      sel.addRange(range);
-    }
-  }
-});
-
-// Paste CLI command → parse and set controls (reverse mode)
-// Triggers as soon as the input contains a recognisable command.
-cliPasteInput.addEventListener('input', () => {
-  const val = cliPasteInput.value.trim();
-  if (val.includes('soundboard-snag')) {
-    parseAndApplyCommand(val);
-    // Clear the paste field after a short delay so the user sees the controls update
-    setTimeout(() => { cliPasteInput.value = ''; }, 400);
-  }
-});
 
 // Cancel the active search stream when the user navigates away.
 // This signals the server (via broken connection) to stop the worker.
@@ -1312,12 +844,6 @@ window.addEventListener('beforeunload', () => {
 /* ═══════════════════════════════════════════════════════════════
    INITIALISATION
    ═══════════════════════════════════════════════════════════════ */
-
-// Update the server-address badge to the actual host
-serverAddress.textContent = `v · ${window.location.host || '127.0.0.1:8765'}`;
-
-// Build the initial CLI mirror (shows bare `soundboard-snag.py`)
-refreshCliMirror();
 
 // Run the power-on animation
 runPowerOn();
