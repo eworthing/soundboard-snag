@@ -634,6 +634,24 @@ class SearchTrafficSafeguardTests(unittest.TestCase):
         self.assertEqual([b.board_name for b in results], ["ok"])
         self.assertIn(f"{B}/sb/ok", calls)
 
+    def test_no_politeness_pause_for_pages_served_from_cache(self):
+        pages = {f"{B}/search/q": _search_page(["a", "b"]),
+                 f"{B}/sb/a": _board_page([("1", "x")], "30"),
+                 f"{B}/sb/b": _board_page([("2", "y")], "20")}
+
+        def run(from_cache):
+            def fetch(url):
+                if url not in pages:
+                    raise URLError("no such page")
+                return pages[url]
+            fetch.was_cached = lambda: from_cache
+            with mock.patch("time.sleep") as sleep, redirect_stdout(io.StringIO()):
+                sb.search_boards("q", fetch=fetch, max_results=10, min_views=0, min_sounds=0)
+            return sleep.call_count
+
+        self.assertEqual(run(from_cache=True), 0)
+        self.assertGreater(run(from_cache=False), 0)
+
     def test_boards_checked_per_search_is_capped(self):
         slugs = [f"b{i}" for i in range(60)]
 
@@ -1018,6 +1036,67 @@ class ServerProtocolTests(unittest.TestCase):
     def test_removed_endpoints_are_gone(self):
         self.assertEqual(self._post("/api/download", {"board": "ok"})[0], 404)
         self.assertEqual(self._post("/api/shutdown", {})[0], 404)
+
+
+class ServerBackoffAndSavedTests(unittest.TestCase):
+    """A dedicated server: the shared cooldown must not leak into other tests."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._original_http_get = sb._http_get
+        cls.calls = []
+        cls.mode = "ok"
+
+        def fake_http_get(url):
+            cls.calls.append(url)
+            if cls.mode == "limited":
+                raise sb.HTTPError(url, 429, "Too Many Requests", {}, None)
+            return _board_page([("1", "Sound A"), ("2", "Sound B"), ("3", "Sound A")], "100")
+
+        sb._http_get = fake_http_get
+        cls.tmpdir = tempfile.mkdtemp()
+        holder, ready = [], threading.Event()
+        threading.Thread(
+            target=lambda: sb.run_server("127.0.0.1", 0, cls.tmpdir,
+                                         on_ready=lambda h: (holder.append(h), ready.set())),
+            daemon=True).start()
+        assert ready.wait(5), "server did not start"
+        cls.httpd = holder[0]
+        cls.port = cls.httpd.server_address[1]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        shutil.rmtree(cls.tmpdir, ignore_errors=True)
+        sb._http_get = cls._original_http_get
+
+    def _board(self, name):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            conn.request("GET", "/api/board/" + name)
+            return json.loads(conn.getresponse().read().decode("utf-8"))
+        finally:
+            conn.close()
+
+    def test_a_board_lists_which_sounds_are_already_saved(self):
+        folder = os.path.join(self.tmpdir, "saved board")
+        os.makedirs(folder)
+        for name in ("Sound A.mp3", "Sound A (3).mp3"):    # same-titled twins: plain name, then "(id)"
+            open(os.path.join(folder, name), "wb").close()
+        data = self._board("saved%20board")
+        self.assertEqual([(x["id"], x["saved"]) for x in data["sounds"]],
+                         [("1", True), ("2", False), ("3", True)])
+
+    def test_zz_site_refusal_pauses_all_requests_but_cached_pages_still_work(self):
+        type(self).mode = "ok"
+        self.assertIsNone(self._board("cached")["error"])            # now cached
+        type(self).mode = "limited"
+        before = len(self.calls)
+        self.assertIn("429", self._board("other")["error"])           # the site says stop
+        self.assertEqual(len(self.calls), before + 1)
+        self.assertIn("slow down", self._board("another")["error"])   # refused locally
+        self.assertEqual(len(self.calls), before + 1)                 # no second request
+        self.assertIsNone(self._board("cached")["error"])            # cache still served
 
 
 if __name__ == "__main__":

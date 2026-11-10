@@ -417,7 +417,7 @@ function renderChips(padEl, board, sounds, totalCount) {
   const state = new Map([...soundsEl.querySelectorAll('.sound-chip[data-id]')]
     .map(c => [c.dataset.id, c.className]));
   soundsEl.innerHTML = sounds
-    .map(s => `<button type="button" class="sound-chip" data-id="${escHtml(s.id)}" data-title="${escHtml(s.title)}" title="Download — ${escHtml(s.title)}">${escHtml(s.title)}</button>`)
+    .map(s => `<button type="button" class="sound-chip${s.saved ? ' is-saved' : ''}" data-id="${escHtml(s.id)}" data-title="${escHtml(s.title)}" title="Download — ${escHtml(s.title)}">${escHtml(s.title)}</button>`)
     .join('');
   soundsEl.querySelectorAll('.sound-chip').forEach(chip => {
     if (state.has(chip.dataset.id)) chip.className = state.get(chip.dataset.id);
@@ -813,6 +813,50 @@ sortSelect.addEventListener('change', applySortChange);
 // This signals the server (via broken connection) to stop the worker.
 window.addEventListener('beforeunload', () => {
   if (searchAbort) searchAbort.abort();
+});
+
+/* ═══════════════════════════════════════════════════════════════
+   REMEMBERED SETTINGS and shortcuts
+   ═══════════════════════════════════════════════════════════════ */
+
+const PREFS_KEY = 'soundboard-snag.prefs';
+const prefFields = {
+  q: searchInput, minViews: minViewsInput, minSounds: minSoundsInput,
+  max: maxInput, sort: sortSelect, dates: includeDates,
+};
+
+function savePrefs() {
+  const prefs = {};
+  for (const [key, el] of Object.entries(prefFields)) {
+    prefs[key] = el.type === 'checkbox' ? el.checked : el.value;
+  }
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (_) { /* storage unavailable */ }
+}
+
+function restorePrefs() {
+  let prefs = null;
+  try { prefs = JSON.parse(localStorage.getItem(PREFS_KEY)); } catch (_) { /* none yet */ }
+  if (!prefs) return;
+  for (const [key, el] of Object.entries(prefFields)) {
+    if (!(key in prefs)) continue;
+    if (el.type === 'checkbox') el.checked = !!prefs[key];
+    else el.value = prefs[key];
+  }
+}
+
+restorePrefs();
+Object.values(prefFields).forEach(el => {
+  el.addEventListener('change', savePrefs);
+  el.addEventListener('input', savePrefs);
+});
+
+// ⌘F jumps to the search field, like a search box in any Mac app.
+window.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+    e.preventDefault();
+    searchInput.focus();
+    searchInput.select();
+  }
 });
 
 /* ═══════════════════════════════════════════════════════════════

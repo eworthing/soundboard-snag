@@ -611,6 +611,11 @@ def search_boards(
         fetch = _http_get
     encoded_query = quote(query)
 
+    def pause():
+        """Politeness delay between requests; not needed when the page came from the cache."""
+        if not getattr(fetch, "was_cached", lambda: False)():
+            time.sleep(REQUEST_DELAY)
+
     if logger:
         logger.event(
             "search_start",
@@ -927,7 +932,7 @@ def search_boards(
                         downloadable_count += 1
 
                 # Add delay between board checks to be respectful to server
-                time.sleep(REQUEST_DELAY)
+                pause()
 
             except Exception as e:
                 if logger:
@@ -946,7 +951,7 @@ def search_boards(
             break
 
         page += 1
-        time.sleep(REQUEST_DELAY)  # Delay between pages
+        pause()  # Delay between pages
 
 
     # Filter results to only show downloadable boards (already done in meets_filters logic)
@@ -1199,14 +1204,37 @@ def run_server(host, port, download_root, max_jobs=2, coordinator=None, on_ready
     PAGE_CACHE_MAX = 60    # pages
     page_cache = {}
     page_cache_lock = threading.Lock()
+    COOLDOWN = 60          # seconds without requests after the site says stop (403/429/5xx)
+    cooldown_until = [0.0]
+    served = threading.local()
 
     def cached_fetch(url):
+        """Fetch ``url`` for search and board lookups: cached, and shared back-off.
+
+        Once any request is answered with 403/429/5xx, no request goes to
+        soundboard.com for COOLDOWN seconds, whichever feature asks (cached pages
+        are still served). ``cached_fetch.was_cached()`` tells the caller whether
+        the last call on this thread skipped the network, so it can skip its
+        politeness pause.
+        """
+        served.cached = False
         now = time.monotonic()
         with page_cache_lock:
             hit = page_cache.get(url)
             if hit and now - hit[0] < PAGE_CACHE_TTL:
+                served.cached = True
                 return hit[1]
-        text = _http_get(url)   # errors propagate and are never cached
+            wait = cooldown_until[0] - now
+        if wait > 0:
+            raise HTTPError(url, 429, "soundboard.com asked us to slow down; try again in %d s"
+                            % (wait + 1), {}, None)
+        try:
+            text = _http_get(url)   # errors propagate and are never cached
+        except HTTPError as e:
+            if _site_says_stop(e.code):
+                with page_cache_lock:
+                    cooldown_until[0] = time.monotonic() + COOLDOWN
+            raise
         with page_cache_lock:
             for stale in [u for u, (at, _) in page_cache.items() if now - at >= PAGE_CACHE_TTL]:
                 del page_cache[stale]
@@ -1215,6 +1243,27 @@ def run_server(host, port, download_root, max_jobs=2, coordinator=None, on_ready
                     del page_cache[old]
             page_cache[url] = (now, text)
         return text
+
+    cached_fetch.was_cached = lambda: getattr(served, "cached", False)
+
+    def mark_saved(board, sounds):
+        """Set ``saved`` on each {id, title} in ``sounds`` already in the board's folder."""
+        try:
+            tool = SoundboardSnag("%s/sb/%s" % (BASE_URL, _quote_path_segment(board)),
+                                  download_root=server_root)
+            folder = os.path.join(server_root, tool._board_output_dirname())
+            stems = {os.path.splitext(n)[0].lower() for n in os.listdir(folder)}
+        except (OSError, ValueError):
+            return sounds
+        seen = set()
+        for sound in sounds:
+            stem = os.path.splitext(tool._sanitize_filename(
+                "%s.mp3" % (sound["title"] or "audio_" + sound["id"]), sound["id"], sound["title"]))[0].lower()
+            # A second sound with the same title is saved as "<title> (<id>)".
+            key = "%s (%s)" % (stem, sound["id"]) if stem in seen else stem
+            seen.add(stem)
+            sound["saved"] = key in stems
+        return sounds
 
     CONTENT_TYPES = {
         ".html": "text/html; charset=utf-8",
@@ -1436,6 +1485,8 @@ def run_server(host, port, download_root, max_jobs=2, coordinator=None, on_ready
                 class _Sink:
                     def event(self, event_type, **fields):
                         # The page only uses these; the rest is engine diagnostics.
+                        if event_type == "board_result":
+                            mark_saved(fields["board"]["board"], fields["board"]["sounds"])
                         if event_type in ("board_analyze_start", "board_result", "search_partial"):
                             emit(event_type, **fields)
 
@@ -1453,7 +1504,10 @@ def run_server(host, port, download_root, max_jobs=2, coordinator=None, on_ready
                             logger=_Sink(), cancel_event=cancel, time_budget=30,
                             fetch=cached_fetch,
                         )
-                        emit("results", [board_result_to_dict(b) for b in results])
+                        boards = [board_result_to_dict(b) for b in results]
+                        for b in boards:
+                            mark_saved(b["board"], b["sounds"])
+                        emit("results", boards)
                     except Exception as e:
                         emit("error", {"message": str(e)})
                 return worker
@@ -1524,7 +1578,7 @@ def run_server(host, port, download_root, max_jobs=2, coordinator=None, on_ready
                     "board": board,
                     "has_downloads": bool(has_downloads),
                     "total_count": len(items),
-                    "sounds": [{"id": sid, "title": title} for sid, title in items],
+                    "sounds": mark_saved(board, [{"id": sid, "title": title} for sid, title in items]),
                     "error": None,
                 })
             except Exception as e:
@@ -1551,6 +1605,7 @@ def run_server(host, port, download_root, max_jobs=2, coordinator=None, on_ready
 APP_NAME = "Soundboard Snag"
 DEFAULT_DOWNLOAD_ROOT = "~/Downloads/Soundboard Snag"
 APP_SUPPORT_DIR = "~/Library/Application Support/Soundboard Snag"
+APP_PORT = 47865   # preferred local port for the app's own web server
 APP_ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "AppIcon.icns")
 
 
@@ -1653,9 +1708,17 @@ def run_desktop(download_root):
         holder.append(httpd)
         ready.set()
 
-    threading.Thread(
-        target=run_server, args=("127.0.0.1", 0, download_root),
-        kwargs={"coordinator": coordinator, "on_ready": on_ready}, daemon=True).start()
+    def serve():
+        # A stable port keeps the page's origin, and so its saved settings, the
+        # same between launches; fall back to any free port if it is taken.
+        for port in (APP_PORT, 0):
+            try:
+                run_server("127.0.0.1", port, download_root, coordinator=coordinator, on_ready=on_ready)
+                return
+            except OSError:
+                continue
+
+    threading.Thread(target=serve, daemon=True).start()
     if not ready.wait(10):
         raise SystemExit("The local server did not start.")
     httpd = holder[0]
