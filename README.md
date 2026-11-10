@@ -3,7 +3,7 @@
 A macOS app for finding [soundboard.com](https://soundboard.com) boards and saving their sounds with clean filenames.
 
 - **Search** boards with quality filters (minimum views and sounds), sorted by popularity or approximate update date.
-- **See the sounds** of each board right in the results; sounds you already saved are marked, and your filters are remembered between launches (⌘F jumps to the search field).
+- **See the sounds** of each board right in the results; sounds you already saved are marked, and your filters are remembered between launches (⌘F jumps to the search field, and ⌘+, ⌘− and ⌘0 change the interface size).
 - **Click a sound to save it** to `~/Downloads/Soundboard Snag/<board>/` under a tidy name.
 
 ## How downloading works

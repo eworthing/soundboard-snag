@@ -871,9 +871,25 @@ Object.values(prefFields).forEach(el => {
   el.addEventListener('input', savePrefs);
 });
 
-// ⌘F jumps to the search field, like a search box in any Mac app.
+// Interface size: ⌘+ and ⌘− change it, ⌘0 resets it. Everything is sized in rem,
+// so the whole window scales. The index.html head script applies the saved size.
+const SIZE_KEY = 'soundboard-snag.size';
+const SIZE_DEFAULT = 16, SIZE_MIN = 12, SIZE_MAX = 28;
+
+function setUiSize(px) {
+  const size = Math.min(SIZE_MAX, Math.max(SIZE_MIN, px));
+  document.documentElement.style.fontSize = size + 'px';
+  try { localStorage.setItem(SIZE_KEY, String(size)); } catch (_) { /* storage unavailable */ }
+}
+
 window.addEventListener('keydown', (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+  if (!(e.metaKey || e.ctrlKey)) return;
+  const current = parseFloat(getComputedStyle(document.documentElement).fontSize) || SIZE_DEFAULT;
+  if (e.key === '=' || e.key === '+') { e.preventDefault(); setUiSize(current + 1); }
+  else if (e.key === '-') { e.preventDefault(); setUiSize(current - 1); }
+  else if (e.key === '0') { e.preventDefault(); setUiSize(SIZE_DEFAULT); }
+  else if (e.key.toLowerCase() === 'f') {
+    // ⌘F jumps to the search field, like a search box in any Mac app.
     e.preventDefault();
     searchInput.focus();
     searchInput.select();

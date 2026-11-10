@@ -6,7 +6,10 @@
   <meta name="color-scheme" content="light dark">
   <title>Soundboard Snag</title>
   <!-- The app loads this page with ?app=1: its window has a translucent material behind the page. -->
-  <script>if (location.search.indexOf('app=1') !== -1) document.documentElement.classList.add('in-app');</script>
+  <script>
+    if (location.search.indexOf('app=1') !== -1) document.documentElement.classList.add('in-app');
+    try { var size = parseInt(localStorage.getItem('soundboard-snag.size'), 10); if (size) document.documentElement.style.fontSize = size + 'px'; } catch (e) {}
+  </script>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
