@@ -1027,6 +1027,13 @@ body {
 .sound-chip.is-saved::before { content: "\2713  "; }          /* ✓ */
 .sound-chip.is-error { color: var(--rec); border-color: color-mix(in srgb, var(--rec) 55%, transparent); }
 .sound-chip.is-error::before { content: "\2717  "; }          /* ✗ */
+/* Downloads gated by soundboard.com's human check: chips open in the browser */
+body.downloads-gated .sound-chip::before { content: "\2197  "; }  /* ↗ */
+body.downloads-gated .sound-chip.is-downloading::before { content: "\2026  "; }  /* … waiting for the browser */
+body.downloads-gated .sound-chip.is-saved::before { content: "\2713  "; }        /* ✓ */
+.sound-chip.sound-chip--more::before,
+body.downloads-gated .sound-chip.sound-chip--more::before { content: ""; }
+.sound-chip.is-next { color: var(--text); border-color: var(--pad-lit); }
 @media (prefers-reduced-motion: reduce) { .sound-chip { transition: none; } }
 
 .pad__sounds-msg {

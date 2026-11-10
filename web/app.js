@@ -36,6 +36,113 @@ let lastQuery   = '';
 /** In-flight downloads (board id → AbortController) so Stop can cancel them. */
 const activeDownloads = new Map();
 
+// soundboard.com gates every download behind a "Verify you are human" check
+// that this tool does not bypass. Once the server reports that, sounds and
+// boards open on soundboard.com in a new browser tab instead, where the user
+// passes the check themself and the browser saves the file.
+const SITE_URL = 'https://soundboard.com';
+// Starts true: the check is on every download today, so the first click
+// already opens the browser instead of failing once. Set false to make the
+// UI try direct server-side downloads first (it flips back on a blocked one).
+let downloadsGated = true;
+document.body.classList.toggle('downloads-gated', downloadsGated);
+const padButtonLabel = () => (downloadsGated ? 'Get next sound' : 'Grab');
+let handoffHintShown = false;
+
+function markDownloadsGated() {
+  if (downloadsGated) return;
+  downloadsGated = true;
+  document.body.classList.add('downloads-gated');
+  showToast(
+    'soundboard.com now asks you to verify you are human before each download. ' +
+    'Click a sound to open it in your browser — once it downloads, it is renamed and filed here for you.',
+    'error'
+  );
+}
+
+function openInBrowser(url) {
+  window.open(url, '_blank', 'noopener');
+}
+
+const HANDOFF_POLL_MS = 1500;
+
+/**
+ * Gated-mode download of one sound: open its soundboard.com download page in a
+ * new tab (the user passes the human check there), ask the local server to
+ * watch the browser's download folder, and poll until the file has been
+ * renamed and moved into the board's folder. Then cue the next sound.
+ */
+async function handOffSound(chip, board, soundId, title) {
+  if (!/^\d+$/.test(soundId)) return;
+  // Opened synchronously in the click handler so pop-up blockers allow it.
+  openInBrowser(`${SITE_URL}/track/download/${soundId}`);
+
+  const soundsEl = chip.parentElement;
+  chip.classList.remove('is-error', 'is-next');
+  chip.classList.add('is-downloading');
+  const stopWaiting = () => chip.classList.remove('is-downloading');
+
+  let token = null;
+  try {
+    const resp = await fetch('/api/handoff', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ board, sound_id: soundId, title }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    token = data.token || null;
+    if (!token) {
+      stopWaiting();
+      showToast(`Opened in your browser, but can't file it automatically${data.error ? ' — ' + data.error : ''}.`, 'error');
+      return;
+    }
+  } catch (_) {
+    stopWaiting();
+    return;
+  }
+
+  for (;;) {
+    await new Promise(r => setTimeout(r, HANDOFF_POLL_MS));
+    if (!chip.isConnected) {
+      // The chip list was re-rendered (full list loaded): find this sound again.
+      chip = soundsEl.querySelector(`.sound-chip[data-id="${soundId}"]`);
+      if (!chip) return;
+    }
+    let st;
+    try {
+      st = await (await fetch(`/api/handoff/${encodeURIComponent(token)}`)).json();
+    } catch (_) {
+      stopWaiting();
+      return;
+    }
+    if (st.status === 'waiting') continue;
+    stopWaiting();
+    if (st.status === 'saved' || st.status === 'exists') {
+      chip.classList.add('is-saved');
+      showToast(st.status === 'exists' ? `Already saved: ${st.name}` : `Saved ${st.name}`, 'success');
+      cueNextChip(chip);
+    } else if (st.status === 'expired') {
+      showToast(`Stopped waiting for "${title}" — click it to try again.`, 'error');
+    }
+    return;  // 'replaced' / 'unknown': another sound took over
+  }
+}
+
+/** Highlight and focus the next sound that isn't saved yet (Enter grabs it). */
+function cueNextChip(fromChip) {
+  const chips = [...fromChip.parentElement.querySelectorAll('.sound-chip[data-id]')];
+  chips.forEach(c => c.classList.remove('is-next'));
+  const start = chips.indexOf(fromChip);
+  const next = chips.slice(start + 1).concat(chips.slice(0, start))
+    .find(c => !c.classList.contains('is-saved') && !c.classList.contains('is-downloading'));
+  if (next) {
+    next.classList.add('is-next');
+    next.focus({ preventScroll: false });
+  } else {
+    showToast('All sounds on this board are saved.', 'success');
+  }
+}
+
 /* ═══════════════════════════════════════════════════════════════
    DOM REFERENCES
    Gathered once at module load. All IDs match index.html.
@@ -414,9 +521,9 @@ function createPad(board, animDelay = 0) {
     ? `<button
          type="button"
          class="btn btn--primary pad__grab"
-         aria-label="Grab sounds from ${escHtml(board.name)}"
+         aria-label="${padButtonLabel()} from ${escHtml(board.name)}"
        >
-         <span class="grab-label">Grab</span>
+         <span class="grab-label">${padButtonLabel()}</span>
          <svg class="grab-spinner" width="13" height="13" viewBox="0 0 13 13" aria-hidden="true" focusable="false">
            <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" stroke-width="2.2" fill="none" stroke-dasharray="20" stroke-dashoffset="7"/>
          </svg>
@@ -450,9 +557,19 @@ function createPad(board, animDelay = 0) {
       ${grabHtml}
       <span class="pad__progress" aria-live="polite" aria-atomic="true"></span>
     </div>
-    <!-- Sound chips — populated on expand -->
+    <!-- Sound chips — filled from the search result, or on expand -->
     <div class="pad__sounds" hidden></div>
   `;
+
+  // Search results carry the board's first sounds: show them straight away so
+  // a sound is one click from the results, with no expand step.
+  if (board.has_downloads && (board.sounds || []).length) {
+    const soundsEl = el.querySelector('.pad__sounds');
+    renderChips(el, board, board.sounds, board.total_count);
+    soundsEl.hidden = false;
+    el.classList.add('pad--active');
+    el.setAttribute('aria-expanded', 'true');
+  }
 
   // ── Expand sounds on click / keyboard (but not when clicking GRAB) ──
   const expand = () => toggleSounds(el, board);
@@ -486,6 +603,45 @@ function createPad(board, animDelay = 0) {
    SOUND EXPAND — fetch /api/board/<board> and show sound chips
    ═══════════════════════════════════════════════════════════════ */
 
+/**
+ * Fill a pad's chip area. If the board has more sounds than we were given
+ * (search results carry only the first few), add a "+N more" chip that loads
+ * the full list.
+ */
+function renderChips(padEl, board, sounds, totalCount) {
+  const soundsEl = padEl.querySelector('.pad__sounds');
+  // Keep per-chip state (saved / waiting) when the full list replaces a partial one.
+  const state = new Map([...soundsEl.querySelectorAll('.sound-chip[data-id]')]
+    .map(c => [c.dataset.id, c.className]));
+  soundsEl.innerHTML = sounds
+    .map(s => `<button type="button" class="sound-chip" data-id="${escHtml(s.id)}" data-title="${escHtml(s.title)}" title="Download — ${escHtml(s.title)}">${escHtml(s.title)}</button>`)
+    .join('');
+  soundsEl.querySelectorAll('.sound-chip').forEach(chip => {
+    if (state.has(chip.dataset.id)) chip.className = state.get(chip.dataset.id);
+    chip.addEventListener('click', (e) => {
+      e.stopPropagation();  // don't collapse the pad
+      downloadSound(chip, board.board, chip.dataset.id, chip.dataset.title);
+    });
+  });
+  const missing = (Number(totalCount) || 0) - sounds.length;
+  if (missing > 0) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'sound-chip sound-chip--more';
+    more.textContent = `+${missing} more`;
+    more.title = 'Show all sounds on this board';
+    more.addEventListener('click', (e) => {
+      e.stopPropagation();
+      more.disabled = true;
+      more.textContent = 'Loading…';
+      loadAllSounds(padEl, board);
+    });
+    soundsEl.appendChild(more);
+  } else {
+    padEl.dataset.soundsLoaded = '1';
+  }
+}
+
 async function toggleSounds(padEl, board) {
   const soundsEl = padEl.querySelector('.pad__sounds');
   const isOpen   = !soundsEl.hidden;
@@ -503,10 +659,16 @@ async function toggleSounds(padEl, board) {
   soundsEl.hidden = false;
   padEl.setAttribute('aria-expanded', 'true');
 
-  // Already loaded — don't re-fetch
-  if (padEl.dataset.soundsLoaded) return;
+  // Already showing sounds (full list, or the first few from the search) — don't re-fetch
+  if (padEl.dataset.soundsLoaded || soundsEl.querySelector('.sound-chip')) return;
 
   soundsEl.innerHTML = `<span class="pad__sounds-msg">Loading…</span>`;
+  await loadAllSounds(padEl, board);
+}
+
+/** Fetch /api/board/<board> and render the board's full sound list. */
+async function loadAllSounds(padEl, board) {
+  const soundsEl = padEl.querySelector('.pad__sounds');
 
   try {
     // encodeURIComponent handles spaces, %, & in the board identifier
@@ -528,15 +690,7 @@ async function toggleSounds(padEl, board) {
       soundsEl.innerHTML = `<span class="pad__sounds-msg">No sounds found.</span>`;
     } else {
       // Each chip is a button — click it to download just that one sound.
-      soundsEl.innerHTML = sounds
-        .map(s => `<button type="button" class="sound-chip" data-id="${escHtml(s.id)}" data-title="${escHtml(s.title)}" title="Download — ${escHtml(s.title)}">${escHtml(s.title)}</button>`)
-        .join('');
-      soundsEl.querySelectorAll('.sound-chip').forEach(chip => {
-        chip.addEventListener('click', (e) => {
-          e.stopPropagation();  // don't collapse the pad
-          downloadSound(chip, board.board, chip.dataset.id, chip.dataset.title);
-        });
-      });
+      renderChips(padEl, board, sounds, sounds.length);
     }
 
     padEl.dataset.soundsLoaded = '1';
@@ -552,6 +706,10 @@ async function toggleSounds(padEl, board) {
  */
 async function downloadSound(chip, board, soundId, title) {
   if (chip.dataset.busy) return;
+  if (downloadsGated) {
+    handOffSound(chip, board, soundId, title);
+    return;
+  }
   chip.dataset.busy = '1';
   chip.classList.add('is-downloading');
   try {
@@ -568,6 +726,8 @@ async function downloadSound(chip, board, soundId, title) {
         data.status === 'exists' ? `Already saved: ${data.name}` : `Saved ${data.name}`,
         'success'
       );
+    } else if (data.blocked) {
+      markDownloadsGated();
     } else {
       chip.classList.add('is-error');
       const why = data.error || (resp.status === 503 ? 'server busy' : `error ${resp.status}`);
@@ -591,6 +751,36 @@ async function startDownload(padEl, board) {
   const progressEl = padEl.querySelector('.pad__progress');
 
   if (!grabBtn || grabBtn.disabled) return;
+
+  if (downloadsGated) {
+    // Can't grab a whole board past the human check: show its sounds and cue
+    // the first one that isn't saved yet.
+    // A whole board can't be grabbed past the human check, so each press
+    // starts the next sound that isn't saved yet.
+    const pick = () => padEl.querySelector('.sound-chip[data-id]:not(.is-saved):not(.is-downloading)');
+    let next = pick();
+    if (next) {
+      padEl.querySelector('.pad__sounds').hidden = false;
+      padEl.setAttribute('aria-expanded', 'true');
+      handOffSound(next, board.board, next.dataset.id, next.dataset.title);
+      return;
+    }
+    if (!padEl.dataset.soundsLoaded) {
+      // Sounds not on the page yet: load them, then cue the first (a tab can
+      // only be opened straight from a click, so it takes one more press).
+      if (padEl.getAttribute('aria-expanded') !== 'true') await toggleSounds(padEl, board);
+      else await loadAllSounds(padEl, board);
+      next = pick();
+      if (next) { next.classList.add('is-next'); next.focus(); }
+      return;
+    }
+    if (padEl.querySelector('.sound-chip.is-downloading')) {
+      showToast('Still waiting for the sound that is open in your browser.', '');
+    } else {
+      showToast('All sounds on this board are saved.', 'success');
+    }
+    return;
+  }
 
   grabBtn.classList.add('is-loading');
   grabBtn.disabled = true;
@@ -644,7 +834,12 @@ async function startDownload(padEl, board) {
 
           // Server cancelled the download mid-run
           case 'download_aborted':
-            progressEl.textContent = `Aborted: ${data.reason || 'cancelled'}`;
+            if (data.blocked) {
+              progressEl.textContent = 'Needs human check — open in browser';
+              markDownloadsGated();
+            } else {
+              progressEl.textContent = `Aborted: ${data.reason || 'cancelled'}`;
+            }
             resetGrabBtn(grabBtn, progressEl, 3500);
             break;
 
@@ -710,7 +905,7 @@ function handleDownloadComplete(padEl, grabBtn, progressEl, data) {
   setTimeout(() => {
     progressEl.textContent = '';
     progressEl.classList.remove('is-visible');
-    if (labelEl) labelEl.textContent = 'Grab';
+    if (labelEl) labelEl.textContent = padButtonLabel();
   }, 4000);
 }
 
@@ -722,7 +917,7 @@ function resetGrabBtn(grabBtn, progressEl, delayMs) {
     progressEl.textContent = '';
     progressEl.classList.remove('is-visible');
     const labelEl = grabBtn.querySelector('.grab-label');
-    if (labelEl) labelEl.textContent = 'Grab';
+    if (labelEl) labelEl.textContent = padButtonLabel();
   };
   if (delayMs > 0) {
     setTimeout(reset, delayMs);
@@ -965,6 +1160,13 @@ function finishSearch(resultCount) {
   if (resultCount > 0) {
     rackCount.textContent  = `${resultCount} board${resultCount !== 1 ? 's' : ''} loaded`;
     rackStatus.textContent = '';
+    // Cue the first sound, and explain the browser hand-off once per page.
+    const firstChip = padGrid.querySelector('.sound-chip[data-id]:not(.is-saved)');
+    if (firstChip && !padGrid.querySelector('.sound-chip.is-next')) firstChip.classList.add('is-next');
+    if (downloadsGated && firstChip && !handoffHintShown) {
+      handoffHintShown = true;
+      showToast('Click a sound: it opens in your browser. Pass the check there and it is renamed and filed here.', '');
+    }
   } else if (padGrid.children.length === 0) {
     // Nothing to show
     rackCount.textContent  = '';

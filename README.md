@@ -114,7 +114,7 @@ python3 soundboard-snag.py
 | `--include-dates` | Show approximate updated dates via Last-Modified headers |
 | `--recent-days N` | Only show boards updated within the last N days (approx) |
 | `--sort {views,recent}` | Sort search results by views (default) or recent update date |
-| `--date-sample-size N` | Track headers to check per board for dates (0 = all, default: 0) |
+| `--date-sample-size N` | Track headers to check per board for dates (0 = as many as allowed; capped at 10 per board; default: 0) |
 | `--no-progress` | Disable realtime progress updates during searches |
 | `--verbose` | Show detailed steps, detection, parsing, and HTTP date checks |
 | `--log-file PATH` | Write a JSONL log of actions/events to a file |

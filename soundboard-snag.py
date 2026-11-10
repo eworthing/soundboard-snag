@@ -63,7 +63,9 @@ import json
 import math
 import os
 import re
+import shutil
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -74,13 +76,27 @@ from urllib.error import HTTPError, URLError
 
 
 # Module-level constants
-BASE_URL = "https://www.soundboard.com"
+BASE_URL = "https://soundboard.com"  # canonical host; www. answers every request with a 308 redirect
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
 CHUNK_SIZE = 8192
 REQUEST_DELAY = 0.5  # Delay between requests in seconds (be respectful to server)
 HTTP_TIMEOUT = 10  # Network timeout for requests (seconds)
 DOWNLOAD_TIMEOUT = 30  # Slightly higher timeout for actual file downloads
-HEADER_REQUEST_DELAY = 0.05  # Small delay between header checks when scanning many tracks
+HEADER_REQUEST_DELAY = 0.5  # Delay between track header checks (same pace as page requests)
+MAX_DATE_PROBES_PER_BOARD = 10  # Hard cap on track header checks per board when inferring dates
+
+
+def _site_says_stop(code):
+    """True for HTTP statuses that mean "back off": forbidden, rate-limited, or server errors.
+
+    On these the tool stops what it is doing instead of carrying on through
+    the remaining boards at the same pace.
+    """
+    try:
+        code = int(code)
+    except (TypeError, ValueError):
+        return False
+    return code in (403, 429) or 500 <= code < 600
 WINDOWS_RESERVED_NAMES = {'CON', 'PRN', 'AUX', 'NUL'}
 WINDOWS_RESERVED_NAMES.update({f'COM{i}' for i in range(1, 10)})
 WINDOWS_RESERVED_NAMES.update({f'LPT{i}' for i in range(1, 10)})
@@ -389,6 +405,123 @@ def _parse_views_count(text):
     return int(number * multiplier)
 
 
+BLOCKED_DOWNLOAD_MESSAGE = (
+    "soundboard.com returned a web page instead of audio "
+    "(a 'Verify you are human' check); download this sound in a browser"
+)
+
+
+def _is_html_response(content_type, first_chunk):
+    """True when a download response is an HTML page rather than audio.
+
+    Checks the Content-Type header and, in case it is missing or wrong, sniffs
+    the start of the body for an HTML document.
+    """
+    if (content_type or '').split(';')[0].strip().lower() in ('text/html', 'application/xhtml+xml'):
+        return True
+    head = (first_chunk or b'')[:512].lstrip().lower()
+    return head.startswith((b'<!doctype html', b'<html'))
+
+
+class BrowserDownloadWatcher:
+    """File sounds the user downloads in their own browser.
+
+    soundboard.com gates downloads behind a human check this tool does not
+    bypass. The web UI instead opens the download page in the user's browser;
+    the user passes the check and the browser saves the file (usually under
+    ~/Downloads with an opaque name). ``expect()`` registers where the next new
+    audio file in ``watch_dir`` should go, and each ``poll()`` looks for it and
+    moves it to that clean, per-board path.
+
+    One sound is pending at a time (browser filenames can't be matched to a
+    sound, so order is the only link); a new ``expect()`` replaces the last.
+    There is no background thread: the scan runs when the UI polls.
+    """
+
+    AUDIO_EXTS = ('.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac')
+
+    def __init__(self, watch_dir, timeout=600):
+        self.watch_dir = watch_dir
+        self.timeout = timeout
+        self._lock = threading.Lock()
+        self._pending = None   # dict for the one outstanding sound
+        self._done = {}        # token -> final status dict
+        self._counter = 0
+
+    def _listing(self):
+        return set(os.listdir(self.watch_dir))
+
+    def expect(self, dest_dir, base_name):
+        """Register the next browser download; returns a token.
+
+        ``base_name`` is the clean filename without extension; the extension of
+        the file the browser saves is kept. Raises OSError if ``watch_dir``
+        can't be read.
+        """
+        before = self._listing()
+        with self._lock:
+            if self._pending is not None:
+                self._done[self._pending['token']] = {'status': 'replaced'}
+            self._counter += 1
+            token = '%d-%d' % (self._counter, int(time.time() * 1000))
+            self._pending = {
+                'token': token, 'dest_dir': dest_dir, 'base_name': base_name,
+                'before': before, 'sizes': {}, 'deadline': time.time() + self.timeout,
+            }
+            return token
+
+    def poll(self, token):
+        """Status for ``token``: waiting, saved, exists, expired, replaced or unknown."""
+        with self._lock:
+            if token in self._done:
+                return self._done[token]
+            p = self._pending
+            if p is None or p['token'] != token:
+                return {'status': 'unknown'}
+            result = self._scan(p)
+            if result is None and time.time() > p['deadline']:
+                result = {'status': 'expired'}
+            if result is None:
+                return {'status': 'waiting'}
+            self._pending = None
+            self._done[token] = result
+            return result
+
+    def _scan(self, p):
+        try:
+            names = self._listing() - p['before']
+        except OSError:
+            return None
+        for name in sorted(names):
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in self.AUDIO_EXTS or name.startswith('.'):
+                continue
+            path = os.path.join(self.watch_dir, name)
+            try:
+                if not os.path.isfile(path):
+                    continue
+                size = os.path.getsize(path)
+                # Wait until the size is unchanged between two polls, so a
+                # file the browser is still writing is never moved.
+                if size == 0 or p['sizes'].get(name) != size:
+                    p['sizes'][name] = size
+                    continue
+                with open(path, 'rb') as f:
+                    if _is_html_response('', f.read(512)):
+                        continue
+                os.makedirs(p['dest_dir'], exist_ok=True)
+                final_name = p['base_name'] + ext
+                dest = os.path.join(p['dest_dir'], final_name)
+                if os.path.exists(dest):
+                    # Never overwrite; leave the new copy where the browser put it.
+                    return {'status': 'exists', 'name': final_name}
+                shutil.move(path, dest)
+                return {'status': 'saved', 'name': final_name, 'kb': round(size / 1024, 1)}
+            except OSError:
+                continue
+        return None
+
+
 def _extract_board_slugs_from_search_html(html_content):
     """Extract board slugs from search result HTML.
 
@@ -396,8 +529,10 @@ def _extract_board_slugs_from_search_html(html_content):
     Returns URL path segments (may be percent-encoded).
     """
     # Prefer href parsing to avoid matching unrelated /sb/ occurrences.
+    # Links may be root-relative ("/sb/x") or absolute
+    # ("https://soundboard.com/sb/x"); the site switched to absolute in 2026.
     slugs = re.findall(
-        r"href\s*=\s*['\"]?/sb/([^'\"\s>#?]+)",
+        r"href\s*=\s*['\"]?(?:https?://(?:www\.)?soundboard\.com)?/sb/([^'\"\s>#?]+)",
         html_content,
         flags=re.IGNORECASE,
     )
@@ -567,6 +702,7 @@ class SoundboardSnag:
         self.url = urlparse(soundboard_url)
         self.board_slug, self.board_name = self._extract_board_slug_and_name()
         self.base_url = BASE_URL
+        self.blocked_by_verification = False  # set by snag() on a human-check page
         self.download_root = download_root if download_root else os.getcwd()
         self.fetcher = fetcher if fetcher is not None else _http_get
         self.event_cb = event_cb
@@ -751,6 +887,13 @@ class SoundboardSnag:
                 if status_code != 200:
                     return False, f"HTTP {status_code}"
 
+                # soundboard.com may answer with an HTML page (e.g. a
+                # "Verify you are human" bot check) instead of audio. Never
+                # save that as an .mp3 and report success.
+                first_chunk = response.read(CHUNK_SIZE)
+                if _is_html_response(response.headers.get('Content-Type', ''), first_chunk):
+                    return False, BLOCKED_DOWNLOAD_MESSAGE
+
                 # Prefer page title from HTML over header filename
                 # (header filenames are often base64/hash codes)
                 if page_title and page_title.strip():
@@ -772,6 +915,7 @@ class SoundboardSnag:
                 # Write file in chunks; remove partial file on failure
                 try:
                     with open(filepath, 'wb') as f:
+                        f.write(first_chunk)
                         while True:
                             chunk = response.read(CHUNK_SIZE)
                             if not chunk:
@@ -886,12 +1030,22 @@ class SoundboardSnag:
                 emit("file_failed", i=i, n=len(sound_items), error=data)
 
                 # Check if we've hit the consecutive failure limit
-                if consecutive_failures >= max_consecutive_failures:
+                # A human-verification page is a site-wide gate, not a broken
+                # file: stop at once instead of sending more requests.
+                blocked = data == BLOCKED_DOWNLOAD_MESSAGE
+                if blocked or consecutive_failures >= max_consecutive_failures:
                     remaining = len(sound_items) - i
-                    rprint(f"\n{Colors.RED}❌ ERROR: {consecutive_failures} consecutive download failures detected!{Colors.RESET}")
-                    rprint(f"   This board appears to have invalid or broken download links.")
-                    rprint(f"   Attempted: {i}/{len(sound_items)} files")
-                    rprint(f"   Skipping remaining {remaining} file(s) to avoid wasting time and server resources.")
+                    if blocked:
+                        self.blocked_by_verification = True
+                        rprint(f"\n{Colors.RED}❌ soundboard.com requires a 'Verify you are human' check before downloads.{Colors.RESET}")
+                        rprint(f"   This tool does not bypass that check, so it stopped after 1 request.")
+                        rprint(f"   Download in a browser instead: {self._board_url()}")
+                        rprint(f"   Skipping remaining {remaining} file(s).")
+                    else:
+                        rprint(f"\n{Colors.RED}❌ ERROR: {consecutive_failures} consecutive download failures detected!{Colors.RESET}")
+                        rprint(f"   This board appears to have invalid or broken download links.")
+                        rprint(f"   Attempted: {i}/{len(sound_items)} files")
+                        rprint(f"   Skipping remaining {remaining} file(s) to avoid wasting time and server resources.")
 
                     # Clean up empty directory if no files were successfully downloaded or existed
                     if snagged_count == 0 and existing_count == 0:
@@ -902,7 +1056,11 @@ class SoundboardSnag:
                             except OSError:
                                 pass  # Directory not empty or other error, leave it
 
-                    emit("download_aborted", reason="too many consecutive failures")
+                    if blocked:
+                        emit("download_aborted", blocked=True,
+                             reason="soundboard.com requires human verification; download in a browser")
+                    else:
+                        emit("download_aborted", reason="too many consecutive failures")
                     early_exit = True
                     break
 
@@ -1098,6 +1256,12 @@ def search_boards(
     page = 1
     max_pages = 10  # Safety limit to prevent infinite loops
     keep_searching = True
+    # Traffic safeguards (see _site_says_stop / MAX_DATE_PROBES_PER_BOARD):
+    site_stop_code = None        # set when the site answers 403/429/5xx -> stop the search
+    date_probes_blocked = False  # set when a track header check gets such an answer
+    # Boards that fail the filters still cost a request each, so bound the total.
+    max_boards_checked = max(30, int(max_results) * 3)
+    boards_cap_hit = False
 
     # Optional wall-clock budget (seconds). Date inference (recent/--include-dates)
     # probes HTTP headers per track and can run for minutes on a popular term; the
@@ -1140,6 +1304,8 @@ def search_boards(
             rprint(f"{Colors.RED}Error searching page {page}: {e}{Colors.RESET}")
             if logger:
                 logger.event("search_page_fetch_error", page=page, url=search_url, error=str(e))
+            if _site_says_stop(getattr(e, 'code', None)):
+                site_stop_code = e.code
             break
 
         # Extract board slugs from this page (permissive; handles URL-encoded names)
@@ -1186,6 +1352,11 @@ def search_boards(
                 break
             # If we have enough downloadable boards, we can stop
             if downloadable_count >= target_downloadable:
+                keep_searching = False
+                break
+
+            if boards_analyzed_total >= max_boards_checked:
+                boards_cap_hit = True
                 keep_searching = False
                 break
 
@@ -1285,10 +1456,15 @@ def search_boards(
                         # Fallback to IDs from data-src if download IDs aren't found
                         candidate_ids = [sid for sid, _ in sound_matches if str(sid).isdigit()]
 
+                    if date_probes_blocked:
+                        candidate_ids = []
+
                     if candidate_ids:
-                        # date_sample_size=0 => scan all tracks. Otherwise, scan only the last N as displayed.
+                        # date_sample_size=0 => scan as many as allowed. Otherwise, scan only the last N as displayed.
                         if date_sample_size and int(date_sample_size) > 0:
                             candidate_ids = candidate_ids[-int(date_sample_size):]
+                        # Never more than the hard cap, whatever was asked for.
+                        candidate_ids = candidate_ids[-MAX_DATE_PROBES_PER_BOARD:]
 
                         vprint(
                             f"Date scan candidates for {board_name}: {len(candidate_ids)} track(s)"
@@ -1325,6 +1501,13 @@ def search_boards(
                                 track_headers_ok += 1
                             if dt and (max_dt is None or dt > max_dt):
                                 max_dt = dt
+                            m_stop = re.search(r'http_(\d{3})', diag or '')
+                            if m_stop and _site_says_stop(m_stop.group(1)):
+                                # The site refused a header check: make no more
+                                # of them for the rest of this search.
+                                date_probes_blocked = True
+                                vprint(f"Date checks stopped: soundboard.com answered HTTP {m_stop.group(1)}")
+                                break
                             if len(candidate_ids) > 1:
                                 time.sleep(HEADER_REQUEST_DELAY)
 
@@ -1474,10 +1657,16 @@ def search_boards(
                 if render and (not debug) and (not verbose) and sys.stdout.isatty():
                     sys.stdout.write('\033[F\033[K')
                     sys.stdout.flush()
+                if isinstance(e, HTTPError) and _site_says_stop(e.code):
+                    # Forbidden / rate-limited / server error: stop here rather
+                    # than keep requesting the remaining boards.
+                    site_stop_code = e.code
+                    keep_searching = False
+                    break
                 continue
 
         # Move to next page if we haven't found enough boards yet
-        if downloadable_count >= target_downloadable:
+        if downloadable_count >= target_downloadable or not keep_searching:
             break
 
         page += 1
@@ -1487,6 +1676,19 @@ def search_boards(
 
     # Filter results to only show downloadable boards (already done in meets_filters logic)
     results = [r for r in results if r.has_downloads]
+
+    if site_stop_code is not None:
+        stop_msg = (f"soundboard.com answered HTTP {site_stop_code}, so the search stopped early "
+                    f"to avoid sending more requests. Wait a while before trying again.")
+        rprint(f"{Colors.YELLOW}⚠️  {stop_msg}{Colors.RESET}")
+        if logger:
+            logger.event("search_partial", message=stop_msg)
+    elif boards_cap_hit:
+        cap_msg = (f"Checked {boards_analyzed_total} boards, the limit for one search. "
+                   f"Results may be incomplete; loosen the filters or narrow the search.")
+        rprint(f"{Colors.YELLOW}⚠️  {cap_msg}{Colors.RESET}")
+        if logger:
+            logger.event("search_partial", message=cap_msg)
 
     # Tell the caller (web UI) we stopped early on the time budget, so it can note
     # that results may be incomplete rather than looking like a silent truncation.
@@ -1625,7 +1827,7 @@ def _ensure_ca_bundle():
         pass  # no certifi → unchanged behavior
 
 
-def run_server(host, port, download_root, logger=None, max_jobs=2):
+def run_server(host, port, download_root, logger=None, max_jobs=2, browser_downloads=None):
     """Start the local web UI + JSON/SSE API, reusing the search/download engines.
 
     Additive feature: the one-shot CLI is unaffected. Server-side downloads land
@@ -1648,6 +1850,31 @@ def run_server(host, port, download_root, logger=None, max_jobs=2):
     web_root = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web"))
     server_root = os.path.realpath(download_root) if download_root else os.path.realpath(os.getcwd())
     job_sem = threading.BoundedSemaphore(max_jobs)
+    # Where the user's browser saves files; see BrowserDownloadWatcher.
+    watch_dir = os.path.realpath(os.path.expanduser(browser_downloads or "~/Downloads"))
+    handoff = BrowserDownloadWatcher(watch_dir)
+
+    # Short-lived page cache: repeating a search, or loading a board's full
+    # sound list right after a search listed it, reuses the page instead of
+    # asking soundboard.com again.
+    PAGE_CACHE_TTL = 600   # seconds
+    PAGE_CACHE_MAX = 300   # pages
+    page_cache = {}
+    page_cache_lock = threading.Lock()
+
+    def cached_fetch(url):
+        now = time.monotonic()
+        with page_cache_lock:
+            hit = page_cache.get(url)
+            if hit and now - hit[0] < PAGE_CACHE_TTL:
+                return hit[1]
+        text = _http_get(url)   # errors propagate and are never cached
+        with page_cache_lock:
+            if len(page_cache) >= PAGE_CACHE_MAX:
+                for old in sorted(page_cache, key=lambda u: page_cache[u][0])[:PAGE_CACHE_MAX // 4]:
+                    del page_cache[old]
+            page_cache[url] = (now, text)
+        return text
 
     CONTENT_TYPES = {
         ".html": "text/html; charset=utf-8",
@@ -1764,6 +1991,8 @@ def run_server(host, port, download_root, logger=None, max_jobs=2):
                 return self._api_search(parse_qs(parsed.query))
             if path.startswith("/api/board/"):
                 return self._api_board(path[len("/api/board/"):])
+            if path.startswith("/api/handoff/"):
+                return self._send_json(handoff.poll(path[len("/api/handoff/"):]))
             return self._serve_static(path)
 
         def do_POST(self):
@@ -1774,6 +2003,8 @@ def run_server(host, port, download_root, logger=None, max_jobs=2):
                 return self._api_download_sound()
             if path == "/api/shutdown":
                 return self._api_shutdown()
+            if path == "/api/handoff":
+                return self._api_handoff()
             self._send_json({"error": "not found"}, status=404)
 
         # ---- POST /api/shutdown (stops the server; used by the app's Stop button) ----
@@ -1903,6 +2134,7 @@ def run_server(host, port, download_root, logger=None, max_jobs=2):
                             sort_by=sort_by, date_sample_size=dss,
                             progress=False, verbose=False, logger=_Sink(),
                             render=False, cancel_event=cancel, time_budget=30,
+                            fetch=cached_fetch,
                         )
                         emit("results", [board_result_to_dict(b) for b in results])
                     except Exception as e:
@@ -1960,6 +2192,48 @@ def run_server(host, port, download_root, logger=None, max_jobs=2):
 
             self._run_sse_job(build)
 
+        # ---- POST /api/handoff (user downloads in their browser; we file it) ----
+        def _api_handoff(self):
+            """Register one sound the user is about to download in their browser.
+
+            Makes no request to soundboard.com. Returns the page to open and a
+            token to poll at GET /api/handoff/<token>.
+            """
+            if not self._origin_ok():  # CSRF guard
+                self._send_json({"error": "forbidden"}, status=403)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+            except ValueError:
+                length = 0
+            if length > 64 * 1024:
+                self._send_json({"error": "request too large"}, status=413)
+                return
+            try:
+                body = _json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            except Exception:
+                self._send_json({"error": "bad json"}, status=400)
+                return
+            board = (body.get("board") or "").strip()
+            sound_id = str(body.get("sound_id") or "").strip()
+            title = (body.get("title") or "").strip()
+            if not valid_board(board) or not sound_id.isdigit():
+                self._send_json({"error": "bad params"}, status=400)
+                return
+            try:
+                board_url = "%s/sb/%s" % (BASE_URL, _quote_path_segment(board))
+                tool = SoundboardSnag(board_url, download_root=server_root, render=False)
+                dest_dir = os.path.join(tool.download_root, tool._board_output_dirname())
+                clean = tool._sanitize_filename("%s.mp3" % (title or "audio_" + sound_id), sound_id, title)
+                token = handoff.expect(dest_dir, os.path.splitext(clean)[0])
+            except Exception as e:
+                self._send_json({"status": "error", "error": str(e)})
+                return
+            self._send_json({
+                "status": "waiting", "token": token, "watch_dir": watch_dir,
+                "url": "%s/track/download/%s" % (BASE_URL, sound_id),
+            })
+
         # ---- POST /api/download-sound (one track; JSON, not SSE) ----
         def _api_download_sound(self):
             if not self._origin_ok():  # CSRF guard
@@ -1999,7 +2273,8 @@ def run_server(host, port, download_root, logger=None, max_jobs=2):
                 elif result is None:
                     self._send_json({"status": "exists", "name": data})
                 else:
-                    self._send_json({"status": "error", "error": data})
+                    self._send_json({"status": "error", "error": data,
+                                     "blocked": data == BLOCKED_DOWNLOAD_MESSAGE})
             except Exception as e:
                 self._send_json({"status": "error", "error": str(e)})
             finally:
@@ -2016,7 +2291,7 @@ def run_server(host, port, download_root, logger=None, max_jobs=2):
                 return
             try:
                 board_url = "%s/sb/%s" % (BASE_URL, _quote_path_segment(board))
-                tool = SoundboardSnag(board_url, download_root=server_root)
+                tool = SoundboardSnag(board_url, download_root=server_root, fetcher=cached_fetch)
                 html_content = tool._fetch_page()
                 has_downloads, _count = tool._check_downloads_enabled(html_content)
                 items = tool._parse_sound_items(html_content)
@@ -2040,6 +2315,7 @@ def run_server(host, port, download_root, logger=None, max_jobs=2):
     print(f"{Colors.BOLD}{Colors.CYAN}soundboard-snag{Colors.RESET}  web UI  →  {Colors.GREEN}{url}{Colors.RESET}")
     print(f"{Colors.GRAY}  serving assets from {web_root}{Colors.RESET}")
     print(f"{Colors.GRAY}  downloads save under {server_root}{Colors.RESET}")
+    print(f"{Colors.GRAY}  browser downloads picked up from {watch_dir}{Colors.RESET}")
     if host not in ("127.0.0.1", "localhost", "::1"):
         print(f"{Colors.YELLOW}  warning: bound to {host} — anyone on the network can trigger downloads.{Colors.RESET}")
     print(f"{Colors.GRAY}  press Ctrl+C to stop.{Colors.RESET}")
@@ -2178,7 +2454,7 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
         type=int,
         default=0,
         help="When fetching updated dates, how many track headers to check per board. "
-             "0 scans all tracks (most accurate, more requests)."
+             "0 checks as many as allowed. Never more than 10 per board, to limit requests."
     )
     parser.add_argument(
         "-d", "--download-root",
@@ -2210,6 +2486,14 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
         type=int,
         default=8765,
         help="Port for --serve (default: 8765)."
+    )
+    parser.add_argument(
+        "--browser-downloads",
+        metavar="DIR",
+        default=None,
+        help="With --serve: folder your web browser saves downloads to (default: "
+             "~/Downloads). Sounds you download in the browser are renamed and "
+             "moved from here into the board's folder."
     )
 
 
@@ -2246,7 +2530,8 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
     # shared download_root resolution above so the server's root already exists.
     if getattr(args, "serve", False):
         try:
-            run_server(args.host, args.port, download_root, logger=run_logger)
+            run_server(args.host, args.port, download_root, logger=run_logger,
+                       browser_downloads=args.browser_downloads)
         except KeyboardInterrupt:
             print("\nServer stopped.")
         finally:
@@ -2300,6 +2585,13 @@ Note: A subfolder will be created with the name of the soundboard (e.g., 'starwa
                         successful += 1
                     else:
                         failed += 1
+
+                    if snag_tool.blocked_by_verification:
+                        # Site-wide gate: every other board would hit it too.
+                        skipped = total_boards - idx
+                        failed += skipped
+                        print(f"{Colors.YELLOW}Stopping: not requesting the remaining {skipped} board(s).{Colors.RESET}")
+                        break
 
                 except Exception as e:
                     print(f"{Colors.RED}Error downloading {board.board_name}: {e}{Colors.RESET}")

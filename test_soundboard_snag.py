@@ -101,6 +101,22 @@ class ExtractBoardSlugsTests(unittest.TestCase):
         self.assertEqual(sb._extract_board_slugs_from_search_html(many), ["one", "two"])
         self.assertEqual(sb._extract_board_slugs_from_search_html("<p>nothing</p>"), [])
 
+    def test_absolute_urls(self):
+        # soundboard.com search results now link boards with absolute URLs.
+        page = (
+            '<a href="https://soundboard.com/sb/French_Star_Wars">1</a>'
+            '<a href="https://www.soundboard.com/sb/Sounds_from_Star_Wars">2</a>'
+            '<a href="http://soundboard.com/sb/old">3</a>'
+        )
+        self.assertEqual(
+            sb._extract_board_slugs_from_search_html(page),
+            ["French_Star_Wars", "Sounds_from_Star_Wars", "old"],
+        )
+
+    def test_other_hosts_ignored(self):
+        page = '<a href="https://example.com/sb/nope">x</a>'
+        self.assertEqual(sb._extract_board_slugs_from_search_html(page), [])
+
 
 class QuotePathSegmentTests(unittest.TestCase):
     def test_existing_percent_escapes_not_double_encoded(self):
@@ -119,6 +135,132 @@ class FormatDateTests(unittest.TestCase):
         self.assertEqual(sb._format_datetime_utc(None), "unknown")
         dt = datetime(2020, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
         self.assertEqual(sb._format_datetime_utc(dt), "2020-01-02 03:04:05 UTC")
+
+
+class IsHtmlResponseTests(unittest.TestCase):
+    def test_html_content_type(self):
+        self.assertTrue(sb._is_html_response("text/html; charset=utf-8", b"\xff\xfb"))
+
+    def test_audio_content_type(self):
+        self.assertFalse(sb._is_html_response("audio/mpeg", b"ID3\x04\x00"))
+
+    def test_sniffs_html_body_when_header_missing_or_wrong(self):
+        self.assertTrue(sb._is_html_response("", b"\n  <!DOCTYPE html><html>"))
+        self.assertTrue(sb._is_html_response("audio/mpeg", b"<html><head>"))
+        self.assertFalse(sb._is_html_response("", b""))
+
+
+class _FakeDownloadResponse(io.BytesIO):
+    """Minimal stand-in for an urlopen() response used by _snag_sound."""
+
+    def __init__(self, body, content_type):
+        super().__init__(body)
+        self.headers = {"Content-Type": content_type}
+
+    def getcode(self):
+        return 200
+
+
+class SnagSoundContentCheckTests(unittest.TestCase):
+    """_snag_sound must refuse to save a bot-check page as an .mp3."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.snag = sb.SoundboardSnag("https://www.soundboard.com/sb/test")
+
+    def _run(self, body, content_type):
+        resp = _FakeDownloadResponse(body, content_type)
+        with mock.patch.object(sb, "urlopen", return_value=resp):
+            return self.snag._snag_sound("1", "Lightsabers", self.tmp)
+
+    def test_html_challenge_page_is_rejected_and_not_saved(self):
+        ok, msg = self._run(b"<!DOCTYPE html><title>Verify you are human</title>",
+                            "text/html; charset=utf-8")
+        self.assertFalse(ok)
+        self.assertEqual(msg, sb.BLOCKED_DOWNLOAD_MESSAGE)
+        self.assertEqual(os.listdir(self.tmp), [])
+
+    def test_audio_is_saved_in_full(self):
+        body = b"ID3" + b"\x00" * (sb.CHUNK_SIZE + 10)  # spans more than one chunk
+        ok, (name, _kb) = self._run(body, "audio/mpeg")
+        self.assertTrue(ok)
+        with open(os.path.join(self.tmp, name), "rb") as f:
+            self.assertEqual(f.read(), body)
+
+
+class BrowserDownloadWatcherTests(unittest.TestCase):
+    """Files the user downloads in their browser get renamed and filed."""
+
+    def setUp(self):
+        self.watch = tempfile.mkdtemp()
+        self.dest_root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.watch, True)
+        self.addCleanup(shutil.rmtree, self.dest_root, True)
+        self.dest = os.path.join(self.dest_root, "Board")
+        self.w = sb.BrowserDownloadWatcher(self.watch)
+
+    def _drop(self, name, body=b"ID3" + b"\x00" * 2048):
+        with open(os.path.join(self.watch, name), "wb") as f:
+            f.write(body)
+
+    def test_new_audio_file_is_renamed_and_moved_once_size_is_stable(self):
+        self._drop("old.mp3")                       # present before: never touched
+        token = self.w.expect(self.dest, "Lightsabers")
+        self.assertEqual(self.w.poll(token)["status"], "waiting")
+        self._drop("a1b2c3.mp3")
+        self.assertEqual(self.w.poll(token)["status"], "waiting")   # first sighting
+        result = self.w.poll(token)                                  # size unchanged
+        self.assertEqual(result["status"], "saved")
+        self.assertEqual(result["name"], "Lightsabers.mp3")
+        self.assertTrue(os.path.isfile(os.path.join(self.dest, "Lightsabers.mp3")))
+        self.assertEqual(sorted(os.listdir(self.watch)), ["old.mp3"])
+        self.assertEqual(self.w.poll(token)["status"], "saved")      # result is sticky
+
+    def test_ignores_partial_non_audio_and_html_files(self):
+        token = self.w.expect(self.dest, "X")
+        self._drop("x.mp3.crdownload")
+        self._drop("notes.txt")
+        self._drop("page.mp3", b"<!DOCTYPE html><title>Verify you are human</title>")
+        for _ in range(3):
+            self.assertEqual(self.w.poll(token)["status"], "waiting")
+        self.assertFalse(os.path.exists(self.dest))
+
+    def test_growing_file_is_not_moved(self):
+        token = self.w.expect(self.dest, "X")
+        self._drop("x.mp3", b"ID3" + b"\x00" * 10)
+        self.w.poll(token)
+        self._drop("x.mp3", b"ID3" + b"\x00" * 5000)   # still being written
+        self.assertEqual(self.w.poll(token)["status"], "waiting")
+        self.assertEqual(self.w.poll(token)["status"], "saved")
+
+    def test_existing_destination_is_not_overwritten(self):
+        os.makedirs(self.dest)
+        with open(os.path.join(self.dest, "X.mp3"), "wb") as f:
+            f.write(b"original")
+        token = self.w.expect(self.dest, "X")
+        self._drop("new.mp3")
+        self.w.poll(token)
+        self.assertEqual(self.w.poll(token)["status"], "exists")
+        with open(os.path.join(self.dest, "X.mp3"), "rb") as f:
+            self.assertEqual(f.read(), b"original")
+        self.assertIn("new.mp3", os.listdir(self.watch))
+
+    def test_new_expect_replaces_pending_and_unknown_token(self):
+        first = self.w.expect(self.dest, "A")
+        second = self.w.expect(self.dest, "B")
+        self.assertEqual(self.w.poll(first)["status"], "replaced")
+        self.assertEqual(self.w.poll(second)["status"], "waiting")
+        self.assertEqual(self.w.poll("nope")["status"], "unknown")
+
+    def test_expires(self):
+        w = sb.BrowserDownloadWatcher(self.watch, timeout=-1)
+        self.assertEqual(w.poll(w.expect(self.dest, "A"))["status"], "expired")
+
+    def test_missing_watch_dir_raises(self):
+        w = sb.BrowserDownloadWatcher(os.path.join(self.watch, "missing"))
+        with self.assertRaises(OSError):
+            w.expect(self.dest, "A")
 
 
 class _SnagHelpersMixin(unittest.TestCase):
@@ -360,7 +502,7 @@ class RenderBoardLinesTests(unittest.TestCase):
     def test_downloadable_header_and_url(self):
         lines = self._plain(sb._render_board_lines(_make_board(), None, include_dates=False))
         self.assertIn("Board: starwars - ✓ DOWNLOADABLE (12 sounds total)", lines[0])
-        self.assertEqual(lines[1], "URL: https://www.soundboard.com/sb/starwars")
+        self.assertEqual(lines[1], "URL: https://soundboard.com/sb/starwars")
 
     def test_play_only_status(self):
         lines = self._plain(sb._render_board_lines(_make_board(has_downloads=False), None, include_dates=False))
@@ -501,6 +643,105 @@ def _board_item(sid, title, downloadable):
     )
 
 
+class SearchTrafficSafeguardTests(unittest.TestCase):
+    """search_boards backs off and bounds its requests to soundboard.com."""
+
+    def test_site_says_stop(self):
+        for code in (403, 429, 500, 503, "429"):
+            self.assertTrue(sb._site_says_stop(code), code)
+        for code in (200, 404, 405, None, "x"):
+            self.assertFalse(sb._site_says_stop(code), code)
+
+    def _search(self, fetch, **kwargs):
+        calls = []
+
+        def counting(url):
+            calls.append(url)
+            return fetch(url)
+
+        events = []
+
+        class Sink:
+            def event(self, event_type, **fields):
+                events.append((event_type, fields))
+
+        params = dict(max_results=10, min_views=0, min_sounds=0, include_dates=False,
+                      progress=False, verbose=False, logger=Sink())
+        params.update(kwargs)
+        out = io.StringIO()
+        with mock.patch("time.sleep"), redirect_stdout(out):
+            results = sb.search_boards("q", fetch=counting, **params)
+        return results, calls, events, out.getvalue()
+
+    def test_search_stops_on_rate_limit_instead_of_continuing(self):
+        def fetch(url):
+            if url == f"{B}/search/q":
+                return _search_page(["a", "b", "c", "d"])
+            if url == f"{B}/sb/a":
+                return _board_page([("1", "x")], "30")
+            raise sb.HTTPError(url, 429, "Too Many Requests", {}, None)
+
+        results, calls, events, out = self._search(fetch)
+        # search page + board a + board b (429) -- c and d are never requested
+        self.assertEqual(calls, [f"{B}/search/q", f"{B}/sb/a", f"{B}/sb/b"])
+        self.assertEqual([b.board_name for b in results], ["a"])
+        self.assertIn("HTTP 429", out)
+        self.assertTrue(any(t == "search_partial" and "429" in f.get("message", "")
+                            for t, f in events))
+
+    def test_missing_board_does_not_stop_the_search(self):
+        def fetch(url):
+            if url == f"{B}/search/q":
+                return _search_page(["gone", "ok"])
+            if url == f"{B}/sb/ok":
+                return _board_page([("1", "x")], "30")
+            if url == f"{B}/sb/gone":
+                raise sb.HTTPError(url, 404, "Not Found", {}, None)
+            raise URLError("no such page")
+
+        results, calls, _events, _out = self._search(fetch)
+        self.assertEqual([b.board_name for b in results], ["ok"])
+        self.assertIn(f"{B}/sb/ok", calls)
+
+    def test_boards_checked_per_search_is_capped(self):
+        slugs = [f"b{i}" for i in range(60)]
+
+        def fetch(url):
+            if url == f"{B}/search/q":
+                return _search_page(slugs)
+            if "/sb/" in url:
+                return _board_page([("1", "x")], "1")   # fails min_views -> never "found"
+            raise URLError("no such page")
+
+        results, calls, events, _out = self._search(fetch, max_results=5, min_views=100)
+        self.assertEqual(results, [])
+        self.assertEqual(sum("/sb/" in u for u in calls), 30)   # max(30, 5 * 3)
+        self.assertTrue(any(t == "search_partial" for t, _ in events))
+
+    def test_date_probes_capped_per_board(self):
+        sounds = [(str(i), f"s{i}") for i in range(1, 26)]
+        pages = {f"{B}/search/q": _search_page(["big"]),
+                 f"{B}/sb/big": _board_page(sounds, "30")}
+        dt = datetime(2020, 1, 2, tzinfo=timezone.utc)
+        with mock.patch.object(sb, "_fetch_last_modified_detailed",
+                               return_value=(dt, "HEAD 200 last-modified")) as probe:
+            self._search(lambda u: pages[u] if u in pages else (_ for _ in ()).throw(URLError("x")),
+                         include_dates=True, date_sample_size=0)
+        self.assertEqual(probe.call_count, sb.MAX_DATE_PROBES_PER_BOARD)
+
+    def test_date_probes_stop_for_whole_search_when_refused(self):
+        pages = {f"{B}/search/q": _search_page(["a", "b"]),
+                 f"{B}/sb/a": _board_page([("1", "x"), ("2", "y"), ("3", "z")], "30"),
+                 f"{B}/sb/b": _board_page([("4", "x"), ("5", "y")], "20")}
+        with mock.patch.object(sb, "_fetch_last_modified_detailed",
+                               return_value=(None, "HEAD http_429")) as probe:
+            results, _calls, _events, _out = self._search(
+                lambda u: pages[u] if u in pages else (_ for _ in ()).throw(URLError("x")),
+                include_dates=True, date_sample_size=0)
+        self.assertEqual(probe.call_count, 1)      # one refusal, then no more for a or b
+        self.assertEqual(len(results), 2)          # boards are still listed, just undated
+
+
 class SnagPipelineTests(unittest.TestCase):
     """Exercise SoundboardSnag.snag() guard + abort logic offline via the injected fetcher."""
 
@@ -537,6 +778,23 @@ class SnagPipelineTests(unittest.TestCase):
             self.assertFalse(result)
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+    def test_human_verification_aborts_after_one_request(self):
+        html = "".join(_board_item(str(i), f"S{i}", downloadable=True) for i in range(1, 6))
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        snag = self._snag(html, download_root=root)
+        self.assertFalse(snag.blocked_by_verification)
+        out = io.StringIO()
+        with mock.patch.object(snag, "_snag_sound",
+                               return_value=(False, sb.BLOCKED_DOWNLOAD_MESSAGE)) as m, \
+                mock.patch("time.sleep"), redirect_stdout(out):
+            result = snag.snag()
+        # A site-wide human check: one request, then stop (no second try).
+        self.assertEqual(m.call_count, 1)
+        self.assertFalse(result)
+        self.assertTrue(snag.blocked_by_verification)
+        self.assertIn("Verify you are human", out.getvalue())
 
     def test_fetch_page_wraps_httperror_as_runtimeerror(self):
         def boom(url):
@@ -1149,7 +1407,8 @@ class ServerProtocolTests(unittest.TestCase):
         sb._http_get = lambda url: (_ for _ in ()).throw(RuntimeError("simulated failure"))
         conn = self._conn()
         try:
-            conn.request("GET", "/api/search?q=test")
+            # Unique query: the server caches fetched pages for a few minutes.
+            conn.request("GET", "/api/search?q=worker-exception-case")
             resp = conn.getresponse()
             body = resp.read().decode("utf-8")
             if resp.status == 200:
