@@ -37,6 +37,7 @@ let lastQuery   = '';
 
 const SOUND_POLL_MS = 1000;
 let saveHintShown = false;
+let searchStopped = false;   // the server cut the search short (site asked us to slow down, limits)
 
 /**
  * Save one sound. The app opens soundboard.com's download page in its own
@@ -407,6 +408,26 @@ function createPad(board, animDelay = 0) {
    ═══════════════════════════════════════════════════════════════ */
 
 /**
+ * A board's full sound list couldn't be loaded (the site asked us to slow down,
+ * a network error, ...). Keep whatever sounds are already shown, bring back the
+ * "+N more" button so it can be retried, and say why.
+ */
+function showLoadFailure(padEl, board, reason) {
+  const soundsEl = padEl.querySelector('.pad__sounds');
+  const shown = soundsEl.querySelectorAll('.sound-chip[data-id]').length;
+  if (shown) {
+    const more = soundsEl.querySelector('.sound-chip--more');
+    if (more) {
+      more.disabled = false;
+      more.textContent = `+${Math.max((Number(board.total_count) || 0) - shown, 1)} more`;
+    }
+    showToast(`Couldn't load the rest of this board: ${reason}`, 'error');
+  } else {
+    soundsEl.innerHTML = `<span class="pad__sounds-msg is-error">${escHtml(reason)}</span>`;
+  }
+}
+
+/**
  * Fill a pad's chip area. If the board has more sounds than we were given
  * (search results carry only the first few), add a "+N more" chip that loads
  * the full list.
@@ -476,17 +497,14 @@ async function loadAllSounds(padEl, board) {
   try {
     // encodeURIComponent handles spaces, %, & in the board identifier
     const resp = await fetch(`/api/board/${encodeURIComponent(board.board)}`);
-
-    if (!resp.ok) {
-      const errData = await resp.json().catch(() => ({}));
-      const msg     = resp.status === 503
-        ? 'Server busy — try again.'
-        : escHtml(errData.error || `Error ${resp.status}`);
-      soundsEl.innerHTML = `<span class="pad__sounds-msg is-error">${msg}</span>`;
+    const data = await resp.json().catch(() => ({}));
+    const failure = !resp.ok
+      ? (resp.status === 503 ? 'Server busy — try again.' : (data.error || `Error ${resp.status}`))
+      : data.error;
+    if (failure) {
+      showLoadFailure(padEl, board, failure);
       return;
     }
-
-    const data   = await resp.json();
     const sounds = data.sounds || [];
 
     if (!sounds.length) {
@@ -523,6 +541,7 @@ async function getNextSound(padEl, board) {
     else await loadAllSounds(padEl, board);
     next = pick();
   }
+  if (!next && !padEl.dataset.soundsLoaded) return;   // loading failed; the reason was already shown
   if (next) {
     padEl.querySelector('.pad__sounds').hidden = false;
     padEl.classList.add('pad--active');
@@ -544,6 +563,7 @@ async function startSearch(query) {
   }
   searchAbort  = new AbortController();
   boardsScanned = 0;
+  searchStopped = false;
   lastQuery = query;
 
   const maxBoards = parseInt(maxInput.value, 10) || 20;
@@ -597,6 +617,7 @@ async function startSearch(query) {
           // Server hit its time budget (dated searches can be slow) — results
           // that follow may be incomplete.
           case 'search_partial':
+            searchStopped = true;
             if (data && data.message) showToast(data.message, 'error');
             break;
 
@@ -757,7 +778,7 @@ function finishSearch(resultCount) {
   } else if (padGrid.children.length === 0) {
     // Nothing to show
     rackCount.textContent  = '';
-    rackStatus.textContent = 'No results found.';
+    rackStatus.textContent = searchStopped ? 'Search stopped early. See the message below.' : 'No results found.';
     rackEmpty.hidden = false;
   }
 

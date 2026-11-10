@@ -958,8 +958,8 @@ def search_boards(
     results = [r for r in results if r.has_downloads]
 
     if site_stop_code is not None:
-        stop_msg = (f"soundboard.com answered HTTP {site_stop_code}, so the search stopped early "
-                    f"to avoid sending more requests. Wait a while before trying again.")
+        stop_msg = (f"soundboard.com asked us to slow down (HTTP {site_stop_code}), so the search stopped "
+                    f"early to avoid sending more requests. Wait a minute before trying again.")
         if logger:
             logger.event("search_partial", message=stop_msg)
     elif boards_cap_hit:
