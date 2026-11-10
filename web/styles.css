@@ -328,22 +328,6 @@ body {
   flex-wrap: wrap;
 }
 
-/* "SEARCH" label tape — faceplate cream, silkscreen style */
-.command-bar__label {
-  font-family: var(--font-display);
-  font-size: 0.58rem;
-  font-weight: 700;
-  letter-spacing: 0.15em;
-  background: var(--faceplate);
-  color: #3a3530;
-  padding: 2px var(--sp-2);
-  border-radius: 2px;
-  white-space: nowrap;
-  flex-shrink: 0;
-  /* aria-hidden — the real label is .sr-only in the HTML */
-  user-select: none;
-}
-
 .command-bar__input {
   flex: 1 1 200px;
   min-width: 0;
